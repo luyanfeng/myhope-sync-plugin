@@ -41,6 +41,7 @@ class ProjectAppSettings(private val project: Project) : PersistentStateComponen
         var prTargetBranchId: String = "",      // PR 目标分支 id（为空则不自动创建 PR）
         var hiddenColumnIds: String = "",       // 逗号分隔的列索引，如 "4,6"
         var columnWidths: String = "",          // "colIdx:width,..."，如 "3:280,4:160"
+        var endpointSearchHistory: List<String> = emptyList(), // 接口搜索历史（最近查询，去重、上限 20）
         // 注：同步水位 seq 不再本地持久化（oplogBaseSeq 已删除）——每次同步实时从服务端 getOplogHead 获取，保证多实例一致
 
         // —— 项目级覆盖层（账号级字段，空 = 未覆盖，业务读取时回落全局 AppSettings）——
@@ -110,6 +111,10 @@ class ProjectAppSettings(private val project: Project) : PersistentStateComponen
     var columnWidths: String
         get() = myState.columnWidths
         set(value) { myState.columnWidths = value }
+
+    var endpointSearchHistory: List<String>
+        get() = myState.endpointSearchHistory
+        set(value) { myState.endpointSearchHistory = value }
 
     // —— 项目级覆盖层属性（读写 myState.xxx，空 = 未覆盖）——
     var serverUrl: String

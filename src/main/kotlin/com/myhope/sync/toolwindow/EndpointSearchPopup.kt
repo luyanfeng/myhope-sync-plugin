@@ -24,11 +24,13 @@ import com.myhope.sync.model.ControllerGroup
 import com.myhope.sync.model.HttpMethod
 import com.myhope.sync.model.SpringEndpoint
 import com.myhope.sync.psi.SpringControllerParser
+import com.myhope.sync.settings.ProjectAppSettings
 import com.myhope.sync.util.I18n
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
 import java.awt.Dimension
+import java.awt.event.InputEvent
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
@@ -76,6 +78,10 @@ fun showEndpointSearch(project: Project) {
     // 单调递增的搜索序号：仅最新一次触发的结果允许回填，避免旧请求覆盖新结果。
     var searchCounter = 0
 
+    // 搜索历史（内存副本，持久化于 ProjectAppSettings），historyIndex<0 表示不在历史回溯态
+    val history: MutableList<String> = ProjectAppSettings.getInstance(project).endpointSearchHistory.toMutableList()
+    var historyIndex = -1
+
     // 弹窗引用（在 schedule 闭包中用于判断弹窗是否已关闭，需先于闭包声明）
     var popup: JBPopup? = null
 
@@ -110,9 +116,33 @@ fun showEndpointSearch(project: Project) {
         }
     }
 
+    /** 记录一次成功查询到搜索历史（去重、置顶、上限 20）并持久化。 */
+    fun recordHistory(q: String) {
+        if (q.isBlank()) return
+        history.remove(q)
+        history.add(0, q)
+        while (history.size > 20) history.removeAt(history.lastIndex)
+        ProjectAppSettings.getInstance(project).endpointSearchHistory = history.toList()
+    }
+
+    /** 历史回溯：forward=true 翻向更近的历史，false 翻向更早的历史；回填搜索框（触发重搜）。 */
+    fun navigateHistory(forward: Boolean) {
+        if (history.isEmpty()) return
+        historyIndex = when {
+            historyIndex < 0 -> if (forward) 0 else history.lastIndex
+            forward -> (historyIndex + 1).coerceAtMost(history.lastIndex)
+            else -> (historyIndex - 1).coerceAtLeast(0)
+        }
+        searchField.text = history[historyIndex]
+    }
+
     /** 每次输入变化：取消旧请求并重新调度；空查询时直接回到初始提示态。 */
     fun schedule() {
         debounce.cancelAllRequests()
+        // 用户手动输入与当前历史项不一致时，退出历史回溯态
+        if (historyIndex >= 0 && searchField.text != history.getOrNull(historyIndex)) {
+            historyIndex = -1
+        }
         val query = searchField.text.trim().lowercase(Locale.ROOT)
         if (query.isEmpty()) {
             showPlaceholder(I18n.message(project, "search.endpoint.typeToSearch"))
@@ -121,6 +151,7 @@ fun showEndpointSearch(project: Project) {
         showPlaceholder(I18n.message(project, "search.endpoint.searching"))
         val requestId = ++searchCounter
         debounce.addRequest({
+            recordHistory(query)
             runEndpointSearch(project, query, requestId) { results ->
                 // 弹窗已关闭或期间产生了更新的输入时，丢弃过期结果。
                 if (popup?.isDisposed != true && searchCounter == requestId) {
@@ -154,6 +185,12 @@ fun showEndpointSearch(project: Project) {
 
     searchField.addKeyListener(object : KeyAdapter() {
         override fun keyPressed(e: KeyEvent) {
+            // Alt+A / Alt+Shift+A：在搜索历史间回溯（对齐参考图 Alt+a 语义，仅弹窗内局部生效）
+            if (e.isAltDown && e.keyCode == KeyEvent.VK_A) {
+                e.consume()
+                navigateHistory(!e.isShiftDown)
+                return
+            }
             when (e.keyCode) {
                 KeyEvent.VK_ENTER -> {
                     e.consume()
