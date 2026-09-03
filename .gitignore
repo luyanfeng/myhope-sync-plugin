@@ -1,0 +1,8 @@
+.gradle/
+build/
+.intellijPlatform/
+*.iml
+.idea/
+
+# planning-with-files 过程文件（非代码基线）
+.planning/

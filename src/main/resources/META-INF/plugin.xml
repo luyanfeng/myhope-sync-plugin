@@ -1,0 +1,86 @@
+<idea-plugin>
+    <id>com.myhope.sync</id>
+    <name>MyHope Sync</name>
+    <version>2.1.0</version>
+    <vendor email="luyanfeng001001@gmail.com">
+        MyHope Sync
+    </vendor>
+
+    <description>
+        <![CDATA[
+            <p>A plugin that syncs Spring Boot REST API endpoints to MyHope branch snapshots (myhope-pr-server).</p>
+            <p><b>⚠️ Spring Boot (Java) only.</b> Go, Node.js, Python and other languages/frameworks are not supported.</p>
+            <p>Features:</p>
+            <ul>
+                <li>Parse @RestController and @Controller classes</li>
+                <li>Extract HTTP mapping annotations (@RequestMapping, @GetMapping, etc.)</li>
+                <li>Sync endpoints to MyHope via X-API-Token + instance binding + branch snapshot</li>
+                <li>Multi-project/module support in a single IDEA window</li>
+                <li>Selective sync with checkbox selection</li>
+                <li>Search and filter by project name</li>
+            </ul>
+        ]]>
+    </description>
+
+    <change-notes>
+        <![CDATA[
+            <ul>
+                <li><b>2.1.0</b> 持久化作用域拆分: 工作空间/分支/同步状态/扫描缓存/列设置改为按项目隔离（存于项目 .idea/myhope-sync-project.xml）。老版本全局缓存不再生效，首次打开需重新配置工作空间/分支并刷新扫描。</li>
+                <li><b>2.0.0</b> 全面改造: 从 Hoppscotch 同步转向 myhope-pr-server（X-API-Token + 实例绑定 + 分支快照同步）；包名/插件 id 更名 com.myhope.sync</li>
+                <li><b>1.3.0</b> 新增: 服务端版本检测；请求 JSON 前置 Zod 校验；请求 Schema 升级至 v17；修复 body 序列化兼容性</li>
+                <li><b>1.2.4</b> Fix: 请求 body 序列化时 Gson 排除 null 字段导致 web 端 Zod 校验失败</li>
+                <li><b>1.2.3</b> 优化: 集合树查询改为一次 GraphQL 嵌套请求，消除 N+1 懒加载</li>
+                <li><b>1.2.2</b> 优化: 同步状态检查新增 target 模式；集合选择器支持 target 路径显示</li>
+                <li><b>1.2.1</b> Fix: 网络不通时区分「Token 过期」和「服务器不可达」; 移除设置中的帮助链接</li>
+                <li><b>1.2.0</b> 新增: 物理列显隐; 标题列合并入路径列; 接口列显示 @Api tag; 列宽跨会话持久化; 列显隐恢复宽度; 支持以项目及类结构生成子集合</li>
+                <li><b>1.1.0</b> 新增: 标题列; 支持 @ApiOperation 标题; 同步状态 serverId</li>
+                <li><b>1.0.0</b> Initial release</li>
+            </ul>
+        ]]>
+    </change-notes>
+
+    <idea-version since-build="261" until-build="262.*"/>
+
+    <depends>com.intellij.java</depends>
+    <depends>com.intellij.modules.platform</depends>
+
+    <resource-bundle>messages.MyHopeSyncBundle</resource-bundle>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <backgroundPostStartupActivity implementation="com.myhope.sync.service.MyHopeStartupActivity"/>
+
+        <toolWindow
+                id="MyHope Sync"
+                anchor="right"
+                secondary="true"
+                doNotActivateOnStart="false"
+                factoryClass="com.myhope.sync.toolwindow.MyHopeSyncToolWindowFactory"/>
+
+        <applicationService
+                serviceImplementation="com.myhope.sync.settings.AppSettings"/>
+
+        <projectService serviceImplementation="com.myhope.sync.settings.ProjectAppSettings"/>
+        <projectConfigurable
+                instance="com.myhope.sync.settings.ProjectAppSettingsConfigurable"
+                id="com.myhope.sync.settings.ProjectAppSettingsConfigurable"
+                displayName="MyHope Sync"/>
+    </extensions>
+
+    <actions>
+        <action
+                id="com.myhope.sync.action.SyncAction"
+                class="com.myhope.sync.action.SyncAction"
+                text="Sync Spring Boot Endpoints to MyHope"
+                description="Parse Spring Boot controllers and sync endpoints to MyHope">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+        <action
+                id="com.myhope.sync.action.SearchEndpointAction"
+                class="com.myhope.sync.action.SearchEndpointAction"
+                text="Search Endpoints"
+                description="Search Spring Boot endpoints (including comments) and jump to source">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="control BACK_SLASH"/>
+        </action>
+    </actions>
+</idea-plugin>
