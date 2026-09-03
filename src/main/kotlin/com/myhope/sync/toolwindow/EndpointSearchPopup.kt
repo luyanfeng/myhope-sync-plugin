@@ -337,7 +337,9 @@ private class EndpointRowRenderer : ListCellRenderer<Any> {
         val color = httpMethodColor(item.endpoint.httpMethod)
         titleLabel.text =
             "<html><b><font color='$color'>${item.endpoint.httpMethod.name}</font></b>&nbsp;&nbsp;${htmlEscape(item.endpoint.fullPath)}</html>"
-        subtitleLabel.text = item.endpoint.description ?: item.group.controllerClassName
+        // 第二行：所属 Controller 类#方法 + 所属模块（对齐参考图 ApiPost Helper 的"（Controller#method）· in Module”）
+        subtitleLabel.text =
+            "（${item.endpoint.controllerClassQualifiedName}#${item.endpoint.methodName}）· in Module ${item.group.moduleName}"
         subtitleLabel.foreground = if (isSelected) foreground else Color(0x8a8a8a)
         subtitleLabel.isVisible = true
         return panel
