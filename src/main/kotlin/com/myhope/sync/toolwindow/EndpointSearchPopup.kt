@@ -1,6 +1,8 @@
 package com.myhope.sync.toolwindow
 
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.module.ModuleUtil
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
@@ -18,6 +20,7 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextField
+import com.intellij.ui.components.JBCheckBox
 import com.intellij.util.Alarm
 import com.intellij.util.ui.JBEmptyBorder
 import com.myhope.sync.model.ControllerGroup
@@ -88,6 +91,17 @@ fun showEndpointSearch(project: Project) {
     val searchField = JBTextField()
     searchField.emptyText.text = I18n.message(project, "search.endpoint.typeToSearch")
 
+    // 当前打开文件所属模块（用于 "Limit to this module"）；无打开文件时为 null
+    val currentModule = computeCurrentModule(project)
+    val limitCheck = JBCheckBox(I18n.message(project, "search.endpoint.limitModule")).apply {
+        isEnabled = currentModule != null
+        toolTipText = if (currentModule == null) {
+            I18n.message(project, "search.endpoint.noModule")
+        } else {
+            I18n.message(project, "search.endpoint.limitModule") + ": $currentModule"
+        }
+    }
+
     val list = JBList(model)
     list.selectionMode = ListSelectionModel.SINGLE_SELECTION
     list.isFocusable = false // 保持焦点在搜索框，方向键由搜索框统一驱动
@@ -152,7 +166,8 @@ fun showEndpointSearch(project: Project) {
         val requestId = ++searchCounter
         debounce.addRequest({
             recordHistory(query)
-            runEndpointSearch(project, query, requestId) { results ->
+            val moduleNames = if (limitCheck.isSelected) setOfNotNull(currentModule) else null
+            runEndpointSearch(project, query, requestId, moduleNames) { results ->
                 // 弹窗已关闭或期间产生了更新的输入时，丢弃过期结果。
                 if (popup?.isDisposed != true && searchCounter == requestId) {
                     showResults(results)
@@ -216,9 +231,13 @@ fun showEndpointSearch(project: Project) {
         }
     })
 
+    val topPanel = JPanel(BorderLayout(6, 0))
+    topPanel.add(searchField, BorderLayout.CENTER)
+    topPanel.add(limitCheck, BorderLayout.EAST)
+
     val content = JPanel(BorderLayout())
     content.border = JBEmptyBorder(6, 6, 6, 6)
-    content.add(searchField, BorderLayout.NORTH)
+    content.add(topPanel, BorderLayout.NORTH)
     content.add(scroll, BorderLayout.CENTER)
 
     showPlaceholder(I18n.message(project, "search.endpoint.typeToSearch"))
@@ -248,6 +267,7 @@ private fun runEndpointSearch(
     project: Project,
     query: String,
     requestId: Int,
+    moduleNames: Set<String>? = null,
     onResult: (List<EndpointSearchItem>) -> Unit
 ) {
     ProgressManager.getInstance().run(object : Task.Backgroundable(
@@ -259,7 +279,7 @@ private fun runEndpointSearch(
             indicator.isIndeterminate = true
             val groups: List<ControllerGroup> =
                 ApplicationManager.getApplication().runReadAction(Computable {
-                    SpringControllerParser(project).parseAllControllers()
+                    SpringControllerParser(project).parseAllControllers(moduleNames)
                 })
             val results = groups.flatMap { group ->
                 group.endpoints.map { EndpointSearchItem(group, it) }
@@ -381,4 +401,13 @@ private class EndpointRowRenderer : ListCellRenderer<Any> {
         subtitleLabel.isVisible = true
         return panel
     }
+}
+
+/**
+ * 当前编辑器打开文件所属模块名；无打开文件时返回 null。
+ * 用于「Limit to this module」范围限定。
+ */
+private fun computeCurrentModule(project: Project): String? {
+    val file = FileEditorManager.getInstance(project).selectedFiles.firstOrNull() ?: return null
+    return ModuleUtil.findModuleForFile(file, project)?.name
 }
