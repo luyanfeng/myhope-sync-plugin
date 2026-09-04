@@ -106,7 +106,7 @@ fun showEndpointSearch(project: Project) {
     val list = JBList(model)
     list.selectionMode = ListSelectionModel.SINGLE_SELECTION
     list.isFocusable = false // 保持焦点在搜索框，方向键由搜索框统一驱动
-    list.fixedCellHeight = 34
+    list.fixedCellHeight = 40
     list.cellRenderer = EndpointRowRenderer()
 
     val scroll = JBScrollPane(list)
@@ -248,18 +248,23 @@ fun showEndpointSearch(project: Project) {
 
     val topPanel = JPanel(BorderLayout(6, 0))
     topPanel.add(searchField, BorderLayout.CENTER)
-    topPanel.add(limitCheck, BorderLayout.EAST)
 
     val content = JPanel(BorderLayout())
     content.border = JBEmptyBorder(2, 2, 2, 2)
-    content.add(topPanel, BorderLayout.NORTH)
-    content.add(scroll, BorderLayout.CENTER)
+    // 标题栏：标题文本左对齐，「仅限当前模块」勾选右对齐
+    val titleLabel = JBLabel("<html><b>" + I18n.message(project, "search.endpoint.title") + "</b></html>")
+    val titleBar = JPanel(BorderLayout()).apply {
+        add(titleLabel, BorderLayout.CENTER)
+        add(limitCheck, BorderLayout.EAST)
+    }
+    content.add(titleBar, BorderLayout.NORTH)
+    content.add(topPanel, BorderLayout.CENTER)
+    content.add(scroll, BorderLayout.SOUTH)
 
     showPlaceholder(I18n.message(project, "search.endpoint.typeToSearch"))
     val created = JBPopupFactory.getInstance()
         .createComponentPopupBuilder(content, searchField)
         .setRequestFocus(true)
-        .setTitle(I18n.message(project, "search.endpoint.title"))
         .setResizable(true)
         .setMovable(true)
         .setMinSize(Dimension(420, 240))
