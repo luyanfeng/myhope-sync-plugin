@@ -251,9 +251,13 @@ fun showEndpointSearch(project: Project) {
 
     val content = JPanel(BorderLayout())
     content.border = JBEmptyBorder(2, 2, 2, 2)
-    // 标题栏：标题文本左对齐，「仅限当前模块」勾选右对齐
-    val titleLabel = JBLabel("<html><b>" + I18n.message(project, "search.endpoint.title") + "</b></html>")
+    // 标题栏：标题文本左对齐，「仅限当前模块」勾选右对齐；用小号字体+紧凑 padding 缩矮高度
+    val titleFont = JBLabel().font.deriveFont(11f)
+    val titleLabel = JBLabel(
+        "<html><b><font size='2'>" + I18n.message(project, "search.endpoint.title") + "</font></b></html>"
+    ).apply { font = titleFont }
     val titleBar = JPanel(BorderLayout()).apply {
+        border = JBEmptyBorder(0, 0, 0, 0)
         add(titleLabel, BorderLayout.CENTER)
         add(limitCheck, BorderLayout.EAST)
     }
