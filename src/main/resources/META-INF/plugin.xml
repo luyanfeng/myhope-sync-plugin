@@ -88,5 +88,17 @@
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <keyboard-shortcut keymap="$default" first-keystroke="control BACK_SLASH"/>
         </action>
+
+        <group id="com.myhope.sync.action.CopyEndpointUrlGroup"
+               class="com.myhope.sync.action.CopyEndpointUrlGroup"
+               text="Copy Endpoint URL" popup="true">
+            <add-to-group group-id="EditorPopupMenu" anchor="first"/>
+            <action id="com.myhope.sync.action.CopyFullUrlAction"
+                    class="com.myhope.sync.action.CopyFullUrlAction" text="Copy Full URL"/>
+            <action id="com.myhope.sync.action.CopyPathAction"
+                    class="com.myhope.sync.action.CopyPathAction" text="Copy Path Only"/>
+            <action id="com.myhope.sync.action.CopyCurlAction"
+                    class="com.myhope.sync.action.CopyCurlAction" text="Copy as cURL"/>
+        </group>
     </actions>
 </idea-plugin>
