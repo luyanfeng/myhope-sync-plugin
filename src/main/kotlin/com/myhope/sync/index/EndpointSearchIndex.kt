@@ -25,11 +25,11 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object EndpointSearchIndex {
 
-    private val cache = ConcurrentHashMap<Module, List<ControllerGroup>>()
+    private val cache = ConcurrentHashMap<Module, MutableList<ControllerGroup>>()
 
     /** 指定 module 的 Controller 分组（命中缓存直接返回；未命中现场解析该 module）。 */
     fun get(project: Project, module: Module, allowFallback: Boolean = true): List<ControllerGroup> {
-        cache[module]?.let { return it }
+        cache[module]?.let { return it.toList() }
         // PSI 索引访问（JavaFullClassNameIndex 等）必须在 read action 内进行；
         // 未命中时在 read action 内解析，命中走内层 return 不访问 PSI。
         val groups = ApplicationManager.getApplication().runReadAction(Computable {
@@ -43,7 +43,7 @@ object EndpointSearchIndex {
         // 预热（allowFallback=false，索引搜索）在此项目常返回空集——若写入缓存会污染
         // 后续搜索（命中空缓存直接返回），导致搜不到接口。故禁用降级的结果不落地。
         if (allowFallback) {
-            cache[module] = groups
+            cache[module] = groups.toMutableList()
         }
         return groups
     }
@@ -100,6 +100,25 @@ object EndpointSearchIndex {
 
     /** 清空全部缓存（如需要强制刷新时调用）。 */
     fun clear() = cache.clear()
+
+    /**
+     * 追加一片解析结果到指定 module 的缓存（分片预热逐片落地用）。
+     * 线程安全：依赖 ConcurrentHashMap.computeIfAbsent 原子性，重复调用会累积 append。
+     */
+    fun putChunk(module: Module, groups: List<ControllerGroup>) {
+        if (groups.isEmpty()) return
+        cache.computeIfAbsent(module) { mutableListOf() }.addAll(groups)
+    }
+
+    /** 清除指定 module 的部分预热碎片（Task 取消回调用）。 */
+    fun clearPartialPreheat(project: Project) {
+        for (module in ModuleManager.getInstance(project).modules) {
+            cache.remove(module)
+        }
+    }
+
+    /** 缓存中各 module 已解析分组总数（调试/打点用）。 */
+    fun getTotalCachedCount(): Int = cache.values.sumOf { it.size }
 
     /** 缓存规模统计（调试用：评估内存占用 / 是否值得落盘 sqlite 缓存）。 */
     data class CacheStats(

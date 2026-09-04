@@ -12,6 +12,7 @@ import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.searches.AnnotatedElementsSearch
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.util.Query
+import com.intellij.openapi.vfs.VirtualFile
 import com.myhope.sync.model.*
 
 /**
@@ -102,6 +103,118 @@ class SpringControllerParser(private val project: Project) {
      */
     fun parseModule(module: com.intellij.openapi.module.Module, allowFallback: Boolean = true): List<ControllerGroup> =
         scanModule(module, allowFallback)
+
+    /**
+     * 分片解析单个 Module 的 Controller 分组。
+     *
+     * 专供预热使用：把全量解析拆成 <=[chunkSize] 的小批量，逐批回调 [onChunk]，
+     * 让调用方（ReadAction.nonBlocking 短锁）能按片持锁、批间让出、可取消。
+     *
+     * 策略与 [parseModule] 一致：
+     * 1. 先尝试注解搜索 [tryFindByAnnotationSearch]。若找到注解类，按其结果分批解析。
+     * 2. 若注解搜索为空且 [allowFallback]=true，降级为全文件遍历，按源文件分批解析。
+     *    （本项目 AnnotatedElementsSearch 返回 0，Controller 只能靠降级遍历找到，
+     *      故预热必须 allowFallback=true，防卡靠分片而非禁降级。）
+     * 3. 注解为空且 [allowFallback]=false 时返回空。
+     *
+     * 注意：调用方应以 ReadAction.nonBlocking 包裹本方法，本方法在**读锁内**执行，
+     * [onChunk] 回调也在读锁内，只能做轻量内存写入，不要做网络/磁盘 I/O。
+     *
+     * @return 累积的全部分组（等价于 [parseModule] 的结果）。
+     */
+    fun parseModuleChunked(
+        module: com.intellij.openapi.module.Module,
+        chunkSize: Int = 50,
+        allowFallback: Boolean = true,
+        onChunk: (List<ControllerGroup>) -> Unit
+    ): List<ControllerGroup> {
+        val moduleScope = GlobalSearchScope.moduleScope(module)
+        val moduleName = module.name
+        val allGroups = mutableListOf<ControllerGroup>()
+
+        fun flush(accumulator: MutableList<ControllerGroup>) {
+            if (accumulator.isNotEmpty()) {
+                val chunk = accumulator.toList()
+                allGroups.addAll(chunk)
+                onChunk(chunk)
+                accumulator.clear()
+            }
+        }
+
+        // 1) 尝试注解搜索
+        val annotationSearchResult = tryFindByAnnotationSearch(moduleScope)
+        if (annotationSearchResult != null) {
+            val accumulator = mutableListOf<ControllerGroup>()
+            for ((i, psiClass) in annotationSearchResult.withIndex()) {
+                parseControllerClass(psiClass, moduleName)?.let { accumulator.add(it) }
+                if (accumulator.size >= chunkSize || i == annotationSearchResult.size - 1) {
+                    flush(accumulator)
+                }
+            }
+            return allGroups
+        }
+
+        // 2) 注解搜索为空：仅允许降级时走全文件遍历（分片）
+        if (!allowFallback) {
+            return emptyList()
+        }
+
+        val files = collectSourceFiles(moduleScope)
+        val accumulator = mutableListOf<ControllerGroup>()
+        for ((i, vf) in files.withIndex()) {
+            parseControllerInFile(vf, moduleName)?.let { accumulator.addAll(it) }
+            val isLast = i == files.size - 1
+            if (accumulator.size >= chunkSize || isLast) {
+                flush(accumulator)
+            }
+        }
+        return allGroups
+    }
+
+    /** 范围内收集源码内 Java/Kotlin 文件（与 [scanByFileTraversal] 收集逻辑一致）。 */
+    private fun collectSourceFiles(scope: GlobalSearchScope): List<VirtualFile> {
+        val fileIndex = FileIndexFacade.getInstance(project)
+        fun sourceFiles(fileType: com.intellij.openapi.fileTypes.FileType): List<VirtualFile> =
+            FileTypeIndex.getFiles(fileType, scope).filter { fileIndex.isInSourceContent(it) }
+
+        val result = mutableListOf<VirtualFile>()
+        result.addAll(sourceFiles(com.intellij.ide.highlighter.JavaFileType.INSTANCE))
+        // Kotlin 文件（Kotlin 插件可能未安装，用反射安全获取）
+        try {
+            val ktFileTypeClass = Class.forName("org.jetbrains.kotlin.psi.KotlinFileType")
+            val ktInstance = ktFileTypeClass.getField("INSTANCE").get(null)
+            if (ktInstance is com.intellij.openapi.fileTypes.FileType) {
+                result.addAll(sourceFiles(ktInstance))
+            }
+        } catch (_: Exception) {
+            // Kotlin 插件未安装，忽略
+        }
+        return result
+    }
+
+    /**
+     * 解析单个源文件中的 Spring Controller 类，返回分组列表。
+     * 与 [scanByFileTraversal] 的单文件内逻辑一致。
+     */
+    private fun parseControllerInFile(vf: VirtualFile, moduleName: String): List<ControllerGroup>? {
+        val psiFile = PsiManager.getInstance(project).findFile(vf) ?: return null
+        if (psiFile !is PsiJavaFile) return null
+
+        val groups = mutableListOf<ControllerGroup>()
+        for (cls in psiFile.classes) {
+            if (isSpringControllerByAnnotationName(cls)) {
+                val group = parseControllerClass(cls, moduleName)
+                if (group != null) groups.add(group)
+            }
+            PsiTreeUtil.collectElementsOfType(cls, PsiClass::class.java)
+                .filter { it != cls && isSpringControllerByAnnotationName(it) }
+                .forEach { innerClass ->
+                    val group = parseControllerClass(innerClass, moduleName)
+                    if (group != null) groups.add(group)
+                }
+        }
+        return groups
+    }
 
     private fun parseAllControllersInReadAction(moduleNames: Set<String>? = null): List<ControllerGroup> {
         val allModules = ModuleManager.getInstance(project).modules
