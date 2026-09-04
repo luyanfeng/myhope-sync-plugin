@@ -66,8 +66,17 @@ data class EndpointSearchItem(
  */
 private class PlaceholderRow(val text: String)
 
+/**
+ * 「加载更多」尾行（不可跳转）：单击或回车后把下一批结果追加到列表。
+ * [label] 为已格式化的显示文案（在 showEndpointSearch 内用 I18n 生成）。
+ */
+private class NextPageRow(val label: String)
+
 /** 防抖时长（毫秒）：停止输入这么久后才真正执行解析 + 过滤。 */
 private const val SEARCH_DEBOUNCE_MS = 2000L
+
+/** 搜索结果分页大小：每次渲染/追加的结果条数上限，避免 EDT 一次性渲染过多 HTML 行。 */
+private const val SEARCH_PAGE_SIZE = 300
 
 /**
  * 弹出式全局端点搜索（类似 ApiPost Helper 的 Ctrl+\ 接口搜索）。
@@ -81,6 +90,11 @@ fun showEndpointSearch(project: Project) {
     val debounce = Alarm(Alarm.ThreadToUse.SWING_THREAD)
     // 单调递增的搜索序号：仅最新一次触发的结果允许回填，避免旧请求覆盖新结果。
     var searchCounter = 0
+
+    // 搜索结果分页状态：pendingResults 为最近一次搜索的完整过滤结果（后台线程产出，EDT 消费）
+    var pendingResults: List<EndpointSearchItem> = emptyList()
+    // 已渲染进 model 的结果条数（不含 NextPageRow 尾行）
+    var shownCount = 0
 
     // 搜索历史（内存副本，持久化于 ProjectAppSettings），historyIndex<0 表示不在历史回溯态
     val history: MutableList<String> = ProjectAppSettings.getInstance(project).endpointSearchHistory.toMutableList()
@@ -131,18 +145,44 @@ fun showEndpointSearch(project: Project) {
         fitListHeight(1)
     }
 
-    fun showResults(results: List<EndpointSearchItem>) {
-        model.clear()
-        if (results.isEmpty()) {
-            model.addElement(PlaceholderRow(I18n.message(project, "search.endpoint.noMatch")))
-        } else {
-            results.forEach { model.addElement(it) }
+    /**
+     * 从 [pendingResults] 追加一页：结果数据续接在列表尾部（非 clear+重建），
+     * 若仍有剩余则在末尾补「下一页」尾行，直至全部显示完。
+     */
+    fun appendNextPage() {
+        if (shownCount >= pendingResults.size) return
+        // 若 model 末尾当前是"下一页"尾行，先移除，再追加新数据（数据接续，非替换）
+        if (!model.isEmpty() && model.lastElement() is NextPageRow) {
+            model.remove(model.size - 1)
+        }
+        val take = minOf(SEARCH_PAGE_SIZE, pendingResults.size - shownCount)
+        val slice = pendingResults.subList(shownCount, shownCount + take)
+        slice.forEach { model.addElement(it) }
+        shownCount += take
+        // 还有更多 → 末尾补"下一页"尾行（文案含进度与总数，用 I18n.message(project, "search.endpoint.loadMore", shownCount, pendingResults.size)）
+        if (shownCount < pendingResults.size) {
+            model.addElement(NextPageRow(I18n.message(project, "search.endpoint.loadMore", shownCount, pendingResults.size)))
         }
         fitListHeight(model.size())
-        if (model.size() > 0) {
-            list.selectedIndex = 0
-            list.ensureIndexIsVisible(0)
+        // 定位到本次追加的首条结果：翻页/首屏后选中并滚动到该行，让用户直接看到新数据
+        if (model.isEmpty()) return
+        val firstNewRow = model.size() - 1 - (if (model.lastElement() is NextPageRow) 1 else 0) - (take - 1)
+        val newRow = if (firstNewRow >= 0) firstNewRow else 0
+        list.selectedIndex = newRow
+        list.ensureIndexIsVisible(newRow)
+    }
+
+    /** 只渲染第一页：重置分页状态后由 [appendNextPage] 渲染首批结果（或空态占位）。 */
+    fun showResults(results: List<EndpointSearchItem>) {
+        model.clear()
+        pendingResults = results
+        shownCount = 0
+        if (results.isEmpty()) {
+            model.addElement(PlaceholderRow(I18n.message(project, "search.endpoint.noMatch")))
+            fitListHeight(1)
+            return
         }
+        appendNextPage()
     }
 
     /** 记录一次成功查询到搜索历史（去重、置顶、上限 20）并持久化。 */
@@ -193,9 +233,11 @@ fun showEndpointSearch(project: Project) {
 
     fun openSelected() {
         val value = list.selectedValue ?: return
-        if (value !is EndpointSearchItem) return
-        popup?.closeOk(null)
-        navigateToSource(project, value)
+        when (value) {
+            is NextPageRow -> { appendNextPage(); return } // 翻页不关弹窗
+            is PlaceholderRow -> return
+            is EndpointSearchItem -> { popup?.closeOk(null); navigateToSource(project, value) }
+        }
     }
 
     fun moveSelection(delta: Int) {
@@ -240,9 +282,10 @@ fun showEndpointSearch(project: Project) {
 
     list.addMouseListener(object : MouseAdapter() {
         override fun mouseClicked(e: MouseEvent) {
-            if (e.clickCount == 2 && SwingUtilities.isLeftMouseButton(e)) {
-                openSelected()
-            }
+            if (!SwingUtilities.isLeftMouseButton(e)) return
+            val row = list.locationToIndex(e.point)
+            if (row >= 0 && model.get(row) is NextPageRow) { appendNextPage(); return }
+            if (e.clickCount == 2) { openSelected() }
         }
     })
 
@@ -415,8 +458,14 @@ private class EndpointRowRenderer : ListCellRenderer<Any> {
         panel.isOpaque = true
         titleLabel.foreground = foreground
 
-        if (value is PlaceholderRow) {
-            titleLabel.text = "<html><i><font color='#8a8a8a'>${htmlEscape(value.text)}</font></i></html>"
+        // 占位行与「下一页」尾行共用同一样式：单行灰色斜体，子标题隐藏
+        val placeholderText = when (value) {
+            is PlaceholderRow -> value.text
+            is NextPageRow -> value.label
+            else -> null
+        }
+        if (placeholderText != null) {
+            titleLabel.text = "<html><i><font color='#8a8a8a'>${htmlEscape(placeholderText)}</font></i></html>"
             subtitleLabel.isVisible = false
             return panel
         }
