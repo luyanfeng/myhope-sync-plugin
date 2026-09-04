@@ -93,6 +93,11 @@ class SpringControllerParser(private val project: Project) {
         return result
     }
 
+    /**
+     * 解析单个 Module 的 Controller 分组（供搜索索引按 module 粒度缓存复用）。
+     */
+    fun parseModule(module: com.intellij.openapi.module.Module): List<ControllerGroup> = scanModule(module)
+
     private fun parseAllControllersInReadAction(moduleNames: Set<String>? = null): List<ControllerGroup> {
         val allModules = ModuleManager.getInstance(project).modules
         val modules = if (moduleNames != null) {

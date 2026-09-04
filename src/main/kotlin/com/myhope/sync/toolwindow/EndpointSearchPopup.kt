@@ -2,6 +2,8 @@ package com.myhope.sync.toolwindow
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.module.Module
+import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.module.ModuleUtil
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
@@ -13,6 +15,7 @@ import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.ui.popup.JBPopupListener
 import com.intellij.openapi.ui.popup.LightweightWindowEvent
 import com.intellij.openapi.util.Computable
+import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiMethod
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.PsiShortNamesCache
@@ -39,6 +42,7 @@ import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import javax.swing.BoxLayout
 import javax.swing.DefaultListModel
 import javax.swing.JList
@@ -112,9 +116,22 @@ fun showEndpointSearch(project: Project) {
     // 默认宽度较宽（参考成熟接口搜索弹窗），用户可拖拽右下角改尺寸
     scroll.preferredSize = Dimension(1040, 360)
 
+    /** 按可见行数动态收缩列表高度：占位/空结果时收得很矮，结果多时最多到 360。 */
+    fun fitListHeight(rowCount: Int) {
+        // 占位或空结果：显示 1 行的高矮；否则最多显示 8 行（约 320px），并从 preferredSize 同步
+        list.visibleRowCount = rowCount.coerceIn(1, 8)
+        scroll.preferredSize = Dimension(
+            scroll.preferredSize.width,
+            (rowCount.coerceIn(1, 8) * list.fixedCellHeight + 12).coerceAtMost(360)
+        )
+        // pack(relayoutContent, reposition)：重排内容并重新定位，以匹配收缩后的尺寸
+        popup?.pack(false, true)
+    }
+
     fun showPlaceholder(message: String) {
         model.clear()
         model.addElement(PlaceholderRow(message))
+        fitListHeight(1)
     }
 
     fun showResults(results: List<EndpointSearchItem>) {
@@ -124,6 +141,7 @@ fun showEndpointSearch(project: Project) {
         } else {
             results.forEach { model.addElement(it) }
         }
+        fitListHeight(model.size())
         if (model.size() > 0) {
             list.selectedIndex = 0
             list.ensureIndexIsVisible(0)
@@ -257,6 +275,17 @@ fun showEndpointSearch(project: Project) {
         }
     })
     created.showCenteredInCurrentWindow(project)
+    // 预热：后台提前解析全部 module 的缓存，用户输入首个查询时直接命中，避免首次等 1-3 秒。
+    ProgressManager.getInstance().run(object : Task.Backgroundable(
+        project,
+        I18n.message(project, "search.endpoint.title"),
+        false
+    ) {
+        override fun run(indicator: ProgressIndicator) {
+            indicator.isIndeterminate = true
+            resolveGroups(project, null)
+        }
+    })
 }
 
 /**
@@ -277,10 +306,8 @@ private fun runEndpointSearch(
     ) {
         override fun run(indicator: ProgressIndicator) {
             indicator.isIndeterminate = true
-            val groups: List<ControllerGroup> =
-                ApplicationManager.getApplication().runReadAction(Computable {
-                    SpringControllerParser(project).parseAllControllers(moduleNames)
-                })
+            // 读按 module 粒度的缓存解析结果（首次触发解析，之后复用，仅该 module 变更时重算）
+            val groups = resolveGroups(project, moduleNames)
             val results = groups.flatMap { group ->
                 group.endpoints.map { EndpointSearchItem(group, it) }
             }.filter { buildSearchText(it.group, it.endpoint).contains(query) }
@@ -392,13 +419,13 @@ private class EndpointRowRenderer : ListCellRenderer<Any> {
         }
         val item = value as EndpointSearchItem
         val color = httpMethodColor(item.endpoint.httpMethod)
+        // 单行：彩色方法 + 路径 + 灰色「（类#方法）· in Module 模块」
+        val tail = "（${item.endpoint.controllerClassQualifiedName}#${item.endpoint.methodName}）· in Module ${item.group.moduleName}"
         titleLabel.text =
-            "<html><b><font color='$color'>${item.endpoint.httpMethod.name}</font></b>&nbsp;&nbsp;${htmlEscape(item.endpoint.fullPath)}</html>"
-        // 第二行：所属 Controller 类#方法 + 所属模块（对齐参考图 ApiPost Helper 的"（Controller#method）· in Module”）
-        subtitleLabel.text =
-            "（${item.endpoint.controllerClassQualifiedName}#${item.endpoint.methodName}）· in Module ${item.group.moduleName}"
-        subtitleLabel.foreground = if (isSelected) foreground else Color(0x8a8a8a)
-        subtitleLabel.isVisible = true
+            "<html><b><font color='$color'>${item.endpoint.httpMethod.name}</font></b>" +
+            "&nbsp;&nbsp;${htmlEscape(item.endpoint.fullPath)}" +
+            "&nbsp;&nbsp;<font color='#8a8a8a'>${htmlEscape(tail)}</font></html>"
+        subtitleLabel.isVisible = false
         return panel
     }
 }
@@ -410,4 +437,48 @@ private class EndpointRowRenderer : ListCellRenderer<Any> {
 private fun computeCurrentModule(project: Project): String? {
     val file = FileEditorManager.getInstance(project).selectedFiles.firstOrNull() ?: return null
     return ModuleUtil.findModuleForFile(file, project)?.name
+}
+
+/**
+ * 按 module 粒度缓存已解析的 [ControllerGroup]，避免每次搜索都全量重扫 PSI。
+ *
+ * - 每个 module 一条缓存项；用 [PsiModificationTracker] 的全局修改计数做 stamp，
+ *   仅当计数变化时才整体失效重建（代码不变时复用，性能达标）。
+ * - IDEA 启动后首次访问触发解析（搜索弹窗会主动预热），之后秒级返回。
+ * - key 用 module.name；同一 project 内 module 名唯一。
+ */
+private object ControllerIndexCache {
+    private data class Entry(val stamp: Long, val groups: List<ControllerGroup>)
+    // key 用 Module 对象（跨 project 的 Module 实例不同，避免同名 module 串缓存）
+    private val cache = ConcurrentHashMap<Module, Entry>()
+
+    fun get(project: Project, module: Module): List<ControllerGroup> {
+        val stamp = PsiManager.getInstance(project).modificationTracker.modificationCount
+        cache.entries.removeIf { it.value.stamp != stamp } // 代码有改动时清失效项
+        val cached = cache[module]
+        if (cached != null) return cached.groups
+        val groups = try {
+            SpringControllerParser(project).parseModule(module)
+        } catch (e: Exception) {
+            emptyList()
+        }
+        cache[module] = Entry(stamp, groups)
+        return groups
+    }
+
+    /** 清空全部缓存（如需要强制刷新时调用）。 */
+    fun clear() = cache.clear()
+}
+
+/**
+ * 解析目标 module 集合的 Controller 分组（优先命中 [ControllerIndexCache]）。
+ * [moduleNames] 为 null 表示全部 module；非 null 时只取名称命中的 module。
+ * 需在读操作外调用时自行包 [ApplicationManager.getApplication().runReadAction]。
+ */
+private fun resolveGroups(project: Project, moduleNames: Set<String>?): List<ControllerGroup> {
+    val modules = ModuleManager.getInstance(project).modules
+    val target = if (moduleNames != null) modules.filter { it.name in moduleNames } else modules.toList()
+    return ApplicationManager.getApplication().runReadAction(Computable {
+        target.flatMap { ControllerIndexCache.get(project, it) }
+    })
 }
