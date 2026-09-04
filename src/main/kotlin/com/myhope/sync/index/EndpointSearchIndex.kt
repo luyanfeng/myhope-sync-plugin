@@ -28,13 +28,13 @@ object EndpointSearchIndex {
     private val cache = ConcurrentHashMap<Module, List<ControllerGroup>>()
 
     /** 指定 module 的 Controller 分组（命中缓存直接返回；未命中现场解析该 module）。 */
-    fun get(project: Project, module: Module): List<ControllerGroup> {
+    fun get(project: Project, module: Module, allowFallback: Boolean = true): List<ControllerGroup> {
         cache[module]?.let { return it }
         // PSI 索引访问（JavaFullClassNameIndex 等）必须在 read action 内进行；
         // 未命中时在 read action 内解析，命中走内层 return 不访问 PSI。
         val groups = ApplicationManager.getApplication().runReadAction(Computable {
             try {
-                SpringControllerParser(project).parseModule(module)
+                SpringControllerParser(project).parseModule(module, allowFallback)
             } catch (e: Exception) {
                 emptyList()
             }
@@ -47,11 +47,14 @@ object EndpointSearchIndex {
      * 解析目标 module 集合的 Controller 分组（优先命中缓存）。
      * [moduleNames] 为 null 表示全部 module；非 null 时只取名称命中的 module。
      * 调用方需自行保证在读操作内调用（本方法内部不包 read action）。
+     *
+     * @param allowFallback 索引搜索无结果时是否允许降级为全文件遍历。预热阶段传 false，
+     *   避免全项目 PSI resolve 持读锁拖垮启动/卡 UI；用户主动搜索时可 true。
      */
-    fun resolveGroups(project: Project, moduleNames: Set<String>?): List<ControllerGroup> {
+    fun resolveGroups(project: Project, moduleNames: Set<String>?, allowFallback: Boolean = true): List<ControllerGroup> {
         val modules = ModuleManager.getInstance(project).modules
         val target = if (moduleNames != null) modules.filter { it.name in moduleNames } else modules.toList()
-        return target.flatMap { get(project, it) }
+        return target.flatMap { get(project, it, allowFallback) }
     }
 
     /**

@@ -95,8 +95,13 @@ class SpringControllerParser(private val project: Project) {
 
     /**
      * 解析单个 Module 的 Controller 分组（供搜索索引按 module 粒度缓存复用）。
+     *
+     * @param allowFallback 是否允许在注解索引搜索无结果时降级为全文件遍历。
+     *   预热阶段应传 false（降级遍历会做全项目 PSI resolve，持读锁极久，会拖垮启动/卡 UI）；
+     *   用户主动搜索时可 true（此时用户已有操作预期）。
      */
-    fun parseModule(module: com.intellij.openapi.module.Module): List<ControllerGroup> = scanModule(module)
+    fun parseModule(module: com.intellij.openapi.module.Module, allowFallback: Boolean = true): List<ControllerGroup> =
+        scanModule(module, allowFallback)
 
     private fun parseAllControllersInReadAction(moduleNames: Set<String>? = null): List<ControllerGroup> {
         val allModules = ModuleManager.getInstance(project).modules
@@ -113,7 +118,8 @@ class SpringControllerParser(private val project: Project) {
         val allGroups = mutableListOf<ControllerGroup>()
         for (module in modules) {
             try {
-                val moduleGroups = scanModule(module)
+                // 同步路径需要完整扫描（含降级遍历），不能禁用降级
+                val moduleGroups = scanModule(module, allowFallback = true)
                 allGroups.addAll(moduleGroups)
             } catch (e: Exception) {
                 log.warn("模块 [${module.name}] Controller 扫描出错: ${e.message}", e)
@@ -132,7 +138,10 @@ class SpringControllerParser(private val project: Project) {
      * 2. 若找到 → 使用 [AnnotatedElementsSearch] 进行索引级搜索（高效）
      * 3. 若未找到 → 降级为文件遍历搜索（兼容无 Spring 依赖签名的模块）
      */
-    private fun scanModule(module: com.intellij.openapi.module.Module): List<ControllerGroup> {
+    private fun scanModule(
+        module: com.intellij.openapi.module.Module,
+        allowFallback: Boolean
+    ): List<ControllerGroup> {
         val moduleScope = GlobalSearchScope.moduleScope(module)
         val moduleName = module.name
 
@@ -145,7 +154,10 @@ class SpringControllerParser(private val project: Project) {
                 }
         }
 
-        // 降级：文件遍历搜索
+        // 注解索引搜索无结果：仅允许降级时走文件遍历（预热禁用，避免全项目 PSI resolve 拖垮启动）
+        if (!allowFallback) {
+            return emptyList()
+        }
         return scanByFileTraversal(moduleScope, moduleName)
     }
 

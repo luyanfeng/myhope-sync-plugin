@@ -25,7 +25,9 @@ class EndpointSearchStartupActivity : ProjectManagerListener {
                 Runnable {
                     Thread.sleep(3000) // 延迟，避开启动初始化最忙窗口
                     ApplicationManager.getApplication().runReadAction(
-                        Runnable { EndpointSearchIndex.resolveGroups(project, null) }
+                        // 预热禁用降级全文件遍历：索引搜索失败返回空而非 scanByFileTraversal，
+                        // 避免在后台线程做全项目 PSI resolve 持读锁，拖垮启动/卡 UI。
+                        Runnable { EndpointSearchIndex.resolveGroups(project, null, allowFallback = false) }
                     )
                 }
             )
