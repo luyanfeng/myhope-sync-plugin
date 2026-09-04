@@ -1,9 +1,11 @@
 package com.myhope.sync.index
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.util.Computable
 import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiTreeChangeEvent
 import com.intellij.psi.PsiTreeChangeListener
@@ -28,11 +30,15 @@ object EndpointSearchIndex {
     /** 指定 module 的 Controller 分组（命中缓存直接返回；未命中现场解析该 module）。 */
     fun get(project: Project, module: Module): List<ControllerGroup> {
         cache[module]?.let { return it }
-        val groups = try {
-            SpringControllerParser(project).parseModule(module)
-        } catch (e: Exception) {
-            emptyList()
-        }
+        // PSI 索引访问（JavaFullClassNameIndex 等）必须在 read action 内进行；
+        // 未命中时在 read action 内解析，命中走内层 return 不访问 PSI。
+        val groups = ApplicationManager.getApplication().runReadAction(Computable {
+            try {
+                SpringControllerParser(project).parseModule(module)
+            } catch (e: Exception) {
+                emptyList()
+            }
+        })
         cache[module] = groups
         return groups
     }
