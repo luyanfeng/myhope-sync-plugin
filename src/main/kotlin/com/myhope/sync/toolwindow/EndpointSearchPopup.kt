@@ -106,12 +106,12 @@ fun showEndpointSearch(project: Project) {
     val list = JBList(model)
     list.selectionMode = ListSelectionModel.SINGLE_SELECTION
     list.isFocusable = false // 保持焦点在搜索框，方向键由搜索框统一驱动
-    list.fixedCellHeight = 40
+    list.fixedCellHeight = 34
     list.cellRenderer = EndpointRowRenderer()
 
     val scroll = JBScrollPane(list)
-    // 默认宽度较宽（参考成熟接口搜索弹窗），用户可拖拽右下角改尺寸
-    scroll.preferredSize = Dimension(1040, 360)
+    // 默认宽度 1040 * 1.5，用户可拖拽右下角改尺寸
+    scroll.preferredSize = Dimension(1560, 360)
 
     /** 按可见行数动态收缩列表高度：占位/空结果时收得很矮，结果多时最多到 360。 */
     fun fitListHeight(rowCount: Int) {
@@ -251,7 +251,7 @@ fun showEndpointSearch(project: Project) {
     topPanel.add(limitCheck, BorderLayout.EAST)
 
     val content = JPanel(BorderLayout())
-    content.border = JBEmptyBorder(6, 6, 6, 6)
+    content.border = JBEmptyBorder(2, 2, 2, 2)
     content.add(topPanel, BorderLayout.NORTH)
     content.add(scroll, BorderLayout.CENTER)
 
@@ -405,8 +405,9 @@ private class EndpointRowRenderer : ListCellRenderer<Any> {
         }
         val item = value as EndpointSearchItem
         val color = httpMethodColor(item.endpoint.httpMethod)
-        // 单行：彩色方法 + 路径 + 灰色「（类#方法）· in Module 模块」
-        val tail = "（${item.endpoint.controllerClassQualifiedName}#${item.endpoint.methodName}）· in Module ${item.group.moduleName}"
+        // 单行：彩色方法 + 路径 + 灰色「（类#方法）· in Module 模块」；类名过长时包名简写
+        val displayClass = abbreviateControllerName(item.endpoint.controllerClassQualifiedName)
+        val tail = "（$displayClass#${item.endpoint.methodName}）· in Module ${item.group.moduleName}"
         titleLabel.text =
             "<html><b><font color='$color'>${item.endpoint.httpMethod.name}</font></b>" +
             "&nbsp;&nbsp;${htmlEscape(item.endpoint.fullPath)}" +
@@ -423,5 +424,22 @@ private class EndpointRowRenderer : ListCellRenderer<Any> {
 private fun computeCurrentModule(project: Project): String? {
     val file = FileEditorManager.getInstance(project).selectedFiles.firstOrNull() ?: return null
     return ModuleUtil.findModuleForFile(file, project)?.name
+}
+
+/**
+ * 对 Controller 全限定名做包名简写：整行太长时把包各段缩写为首字母、类名保持完整。
+ *
+ * 例：`com.woshishui.green.AController` → `c.w.g.AController`。
+ * 若简写后反而更短/包名已很短（最后一段点前内容不足），则保留完整名，避免过度缩写。
+ */
+private fun abbreviateControllerName(qualifiedName: String): String {
+    val lastDot = qualifiedName.lastIndexOf('.')
+    if (lastDot <= 0) return qualifiedName
+    val pkg = qualifiedName.substring(0, lastDot)
+    val cls = qualifiedName.substring(lastDot + 1)
+    val abbr = pkg.split('.')
+        .filter { it.isNotEmpty() }
+        .joinToString(".") { it.substring(0, 1) }
+    return "$abbr.$cls"
 }
 
