@@ -48,7 +48,6 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <backgroundPostStartupActivity implementation="com.myhope.sync.service.MyHopeStartupActivity"/>
-        <backgroundPostStartupActivity implementation="com.myhope.sync.index.EndpointSearchStartupActivity"/>
 
         <toolWindow
                 id="MyHope Sync"
@@ -66,6 +65,12 @@
                 id="com.myhope.sync.settings.ProjectAppSettingsConfigurable"
                 displayName="MyHope Sync"/>
     </extensions>
+
+    <projectListeners>
+        <listener
+                class="com.myhope.sync.index.EndpointSearchStartupActivity"
+                topic="com.intellij.openapi.project.ProjectManagerListener"/>
+    </projectListeners>
 
     <actions>
         <action
