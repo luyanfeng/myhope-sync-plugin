@@ -859,8 +859,8 @@ class MyHopeSyncPanel(private val project: Project) {
 
                 if (searchText.isEmpty()) return true
 
-                // 目标列：路径(2)、Controller(3)、方法(4)、项目(6)
-                val targetCols = setOf(2, 3, 4, 6)
+                // 目标列：路径(2)、Controller(3)、方法(4)、Parameters(5)、项目(6)
+                val targetCols = setOf(2, 3, 4, 5, 6)
 
                 if (isExcludeMode) {
                     // ^xxx：在目标列中任一列包含 xxx 的行应被排除

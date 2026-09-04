@@ -20,8 +20,6 @@ import java.lang.reflect.Type
  */
 class MyHopeDataConverter {
 
-    private val gson: Gson = GsonBuilder().setPrettyPrinting().serializeNulls().create()
-
     companion object {
         /**
          * 快照 items 序列化专用 Gson。
@@ -249,14 +247,6 @@ class MyHopeDataConverter {
             headers = headers,
             body = body
         )
-    }
-
-    /**
-     * 将 [MyHopeRequest] 序列化为 JSON 字符串，
-     * 可用作 GraphQL 变更操作的请求体的一部分。
-     */
-    fun toRequestRequestBody(request: MyHopeRequest): String {
-        return gson.toJson(request)
     }
 
     // ======================== 快照 items 转换（Phase 4） ========================

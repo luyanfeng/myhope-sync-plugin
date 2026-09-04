@@ -77,12 +77,6 @@ class SpringControllerParser(private val project: Project) {
     /**
      * 解析项目中所有 Spring Controller 类，返回按 Controller 分组的结果。
      *
-     * 所有 PSI 操作在 [ReadAction.compute] 内执行，确保后台线程安全。
-     * 按模块逐一扫描，每个模块尝试注解搜索 → 失败则降级为文件遍历。
-     */
-    /**
-     * 解析项目中所有 Spring Controller 类，返回按 Controller 分组的结果。
-     *
      * @param moduleNames 可选的模块名称过滤集。null 表示扫描所有模块。
      *                    非 null 时只扫描名称在集合中的模块。
      */
@@ -171,25 +165,13 @@ class SpringControllerParser(private val project: Project) {
         return allGroups
     }
 
-    /** 范围内收集源码内 Java/Kotlin 文件（与 [scanByFileTraversal] 收集逻辑一致）。 */
+    /** 范围内收集源码内 Java 文件（插件仅支持 Java Spring Controller；Kotlin 不支持，不收集 .kt）。 */
     private fun collectSourceFiles(scope: GlobalSearchScope): List<VirtualFile> {
         val fileIndex = FileIndexFacade.getInstance(project)
         fun sourceFiles(fileType: com.intellij.openapi.fileTypes.FileType): List<VirtualFile> =
             FileTypeIndex.getFiles(fileType, scope).filter { fileIndex.isInSourceContent(it) }
 
-        val result = mutableListOf<VirtualFile>()
-        result.addAll(sourceFiles(com.intellij.ide.highlighter.JavaFileType.INSTANCE))
-        // Kotlin 文件（Kotlin 插件可能未安装，用反射安全获取）
-        try {
-            val ktFileTypeClass = Class.forName("org.jetbrains.kotlin.psi.KotlinFileType")
-            val ktInstance = ktFileTypeClass.getField("INSTANCE").get(null)
-            if (ktInstance is com.intellij.openapi.fileTypes.FileType) {
-                result.addAll(sourceFiles(ktInstance))
-            }
-        } catch (_: Exception) {
-            // Kotlin 插件未安装，忽略
-        }
-        return result
+        return sourceFiles(com.intellij.ide.highlighter.JavaFileType.INSTANCE)
     }
 
     /**
@@ -322,27 +304,17 @@ class SpringControllerParser(private val project: Project) {
         val result = mutableListOf<ControllerGroup>()
         val fileIndex = FileIndexFacade.getInstance(project)
 
-        // 收集作用域内的所有 Java 文件
+        // 收集作用域内的所有 Java 文件（插件仅支持 Java Spring Controller；Kotlin 不支持，不收集 .kt）
         val files = FileTypeIndex.getFiles(
             com.intellij.ide.highlighter.JavaFileType.INSTANCE,
             scope
-        ).toMutableSet()
-
-        // 尝试也搜索 Kotlin 文件（Kotlin 插件可能未安装，用反射安全获取）
-        try {
-            val ktFileTypeClass = Class.forName("org.jetbrains.kotlin.psi.KotlinFileType")
-            val ktInstance = ktFileTypeClass.getField("INSTANCE").get(null)
-            if (ktInstance is com.intellij.openapi.fileTypes.FileType) {
-                files.addAll(FileTypeIndex.getFiles(ktInstance, scope))
-            }
-        } catch (_: Exception) {
-            // Kotlin 插件未安装，忽略
-        }
+        )
 
         for (vf in files) {
             if (!fileIndex.isInSourceContent(vf)) continue
 
             val psiFile = PsiManager.getInstance(project).findFile(vf) ?: continue
+            // 当前仅解析 Java Controller（Kotlin 不支持），PsiJavaFile 过滤是设计使然
             if (psiFile !is PsiJavaFile) continue
 
             // 遍历文件中的顶级类
@@ -845,7 +817,7 @@ class SpringControllerParser(private val project: Project) {
             canonical == "short" || canonical == "java.lang.Short" ||
             canonical == "byte" || canonical == "java.lang.Byte" -> "0"
             canonical.startsWith("java.math.BigDecimal") || canonical.startsWith("java.math.BigInteger") -> "0"
-            canonical == "java.util.UUID" -> "\"550e8400-e29b-41d4-a716-446655440000\""
+            canonical == "java.util.UUID" -> "\"00000000-0000-0000-0000-000000000000\""
             else -> "\"…\""
         }
     }

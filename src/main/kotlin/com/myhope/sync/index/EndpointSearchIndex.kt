@@ -32,17 +32,21 @@ object EndpointSearchIndex {
         cache[module]?.let { return it.toList() }
         // PSI 索引访问（JavaFullClassNameIndex 等）必须在 read action 内进行；
         // 未命中时在 read action 内解析，命中走内层 return 不访问 PSI。
+        var parsedOk = true
         val groups = ApplicationManager.getApplication().runReadAction(Computable {
             try {
                 SpringControllerParser(project).parseModule(module, allowFallback)
             } catch (e: Exception) {
+                parsedOk = false
                 emptyList()
             }
         })
         // 只有"允许降级的完整解析"结果才写缓存。
+        // 解析抛异常视为"未解析成功"（不是真的无接口），不写缓存——否则空结果会被
+        // 记为"无接口"并永久缓存，后续搜索命中空缓存查不到，需保留不命中以便下次重扫。
         // 预热（allowFallback=false，索引搜索）在此项目常返回空集——若写入缓存会污染
         // 后续搜索（命中空缓存直接返回），导致搜不到接口。故禁用降级的结果不落地。
-        if (allowFallback) {
+        if (allowFallback && parsedOk) {
             cache[module] = groups.toMutableList()
         }
         return groups

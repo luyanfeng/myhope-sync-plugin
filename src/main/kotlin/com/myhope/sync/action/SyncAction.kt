@@ -102,7 +102,7 @@ class SyncAction : AnAction() {
                             try {
                                 val syncParser = SpringControllerParser(project)
                                 val service = SyncService(project, client, syncParser, indicator)
-                                val allGroups = syncParser.parseAllControllers()
+                                val allGroups = groups
                                 val syncResult = service.syncToMyHope(allGroups)
 
                                 SwingUtilities.invokeLater {

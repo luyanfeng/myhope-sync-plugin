@@ -277,14 +277,14 @@ class SyncService(
             return SyncResult(total = totalEndpoints, success = 0, failed = 0, errors = errors)
         }
         val createdCollections = ops.count { it["op_type"] == "create_collection" }
-        val createdRequests = ops.count { it["op_type"] == "create_request" }
-        val updatedRequests = ops.count { isRequestOp(it) && (it["op_type"] as? String)?.startsWith("update_") == true }
 
         // c. 分批 push（≤500/批），每批独立 OCC：409 → server_max_seq 更新水位重推，最多 3 次
         val batches = ops.chunked(500)
         var currentSeq = baseSeq
         var pushedOps = 0
         var pushedRequestOps = 0
+        var pushedRequestCreateOps = 0
+        var pushedRequestUpdateOps = 0
         var success = true
         for (batch in batches) {
             var attempt = 0
@@ -312,7 +312,10 @@ class SyncService(
                     unit?.accepted == true -> {
                         currentSeq = unit.serverMaxSeq ?: (currentSeq + batch.size)
                         pushedOps += batch.size
-                        pushedRequestOps += batch.count { isRequestOp(it) }
+                        val reqOps = batch.filter { isRequestOp(it) }
+                        pushedRequestOps += reqOps.size
+                        pushedRequestCreateOps += reqOps.count { (it["op_type"] as? String) == "create_request" }
+                        pushedRequestUpdateOps += reqOps.count { (it["op_type"] as? String) == "update_request" }
                         batchOk = true
                         break
                     }
@@ -364,8 +367,8 @@ class SyncService(
             success = pushedRequestOps,
             failed = if (errors.isEmpty()) 0 else (totalEndpoints - pushedRequestOps).coerceAtLeast(0),
             collectionsCreated = if (success) createdCollections else 0,
-            requestsCreated = if (success) createdRequests else 0,
-            requestsUpdated = if (success) updatedRequests else 0,
+            requestsCreated = pushedRequestCreateOps,
+            requestsUpdated = pushedRequestUpdateOps,
             errors = errors,
             prCreated = prCreated,
             prMessage = if (prCreated) null else prError
