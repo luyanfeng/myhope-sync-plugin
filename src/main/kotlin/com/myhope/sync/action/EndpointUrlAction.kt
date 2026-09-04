@@ -10,33 +10,24 @@ import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.psi.PsiAnnotation
-import com.intellij.psi.PsiAnnotationMemberValue
-import com.intellij.psi.PsiArrayInitializerMemberValue
-import com.intellij.psi.PsiClass
-import com.intellij.psi.PsiClassType
-import com.intellij.psi.PsiEnumConstant
-import com.intellij.psi.PsiField
-import com.intellij.psi.PsiLiteralExpression
+import com.intellij.psi.PsiFile
+import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiMethod
-import com.intellij.psi.PsiParameter
-import com.intellij.psi.PsiPrimitiveType
-import com.intellij.psi.PsiReferenceExpression
 import com.intellij.psi.util.PsiTreeUtil
+import com.myhope.sync.model.ParamSource
+import com.myhope.sync.psi.SpringControllerParser
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 
-// Spring 注解全限定名（与 psi/SpringControllerParser.kt 的 companion object 中同名常量一致；
-// 那里是 private 且不同包不可见，故此处独立声明，值保持同步）
+// Spring 方法级映射注解全限定名（与 psi/SpringControllerParser.kt 的 companion object 中同名常量一致；
+// 那里是 private 且不同包不可见，故此处独立声明，值保持同步）。
+// 仅用于 isCursorOnSpringMethod 的可见性判断（是否存在映射注解），不参与路径/参数解析。
 private const val ANNOTATION_REQUEST_MAPPING = "org.springframework.web.bind.annotation.RequestMapping"
 private const val ANNOTATION_GET_MAPPING = "org.springframework.web.bind.annotation.GetMapping"
 private const val ANNOTATION_POST_MAPPING = "org.springframework.web.bind.annotation.PostMapping"
 private const val ANNOTATION_PUT_MAPPING = "org.springframework.web.bind.annotation.PutMapping"
 private const val ANNOTATION_DELETE_MAPPING = "org.springframework.web.bind.annotation.DeleteMapping"
 private const val ANNOTATION_PATCH_MAPPING = "org.springframework.web.bind.annotation.PatchMapping"
-private const val ANNOTATION_PATH_VARIABLE = "org.springframework.web.bind.annotation.PathVariable"
-private const val ANNOTATION_REQUEST_PARAM = "org.springframework.web.bind.annotation.RequestParam"
-private const val ANNOTATION_REQUEST_BODY = "org.springframework.web.bind.annotation.RequestBody"
 
 /** 可作为 HTTP 端点的方法级映射注解集合（用于判断光标是否处于 Spring 方法上）。 */
 private val MAPPING_ANNOTATION_FQNS = setOf(
@@ -65,8 +56,12 @@ data class EndpointInfo(
     val httpMethod: String,
     val pathVariables: List<Pair<String, String>>,
     val queryParams: List<QueryParam>,
-    val hasRequestBody: Boolean
-)
+    val bodyTemplates: List<String> = emptyList(), // @RequestBody 的 JSON 模板（真实占位值），如 {"name":"","age":0}
+    val headers: List<Pair<String, String>> = emptyList() // @RequestHeader 的 (header 名, 默认值/占位)
+) {
+    /** 是否存在 @RequestBody 参数：由 [bodyTemplates] 推算。 */
+    val hasRequestBody: Boolean get() = bodyTemplates.isNotEmpty()
+}
 
 /**
  * 判断光标是否位于带 Spring HTTP 映射注解的 [PsiMethod] 上。
@@ -74,21 +69,27 @@ data class EndpointInfo(
  * 供各 Copy 动作的 update 与 [CopyEndpointUrlGroup] 的 update 复用。
  */
 internal fun isCursorOnSpringMethod(e: AnActionEvent): Boolean {
-    val editor = e.getData(CommonDataKeys.EDITOR) ?: return false
-    val psiFile = e.getData(CommonDataKeys.PSI_FILE) ?: return false
-    if (e.getData(CommonDataKeys.PROJECT) == null) return false
+    val editor = e.getData(CommonDataKeys.EDITOR)
+    val project = e.project
+    // PSI_FILE 在编辑器右键菜单上下文里有时为 null，用 editor.virtualFile 兜底
+    val psiFile: PsiFile? = e.getData(CommonDataKeys.PSI_FILE)
+        ?: run {
+            val vf = editor?.virtualFile ?: e.getData(CommonDataKeys.VIRTUAL_FILE)
+            if (project != null && vf != null) PsiManager.getInstance(project).findFile(vf) else null
+        }
+    if (editor == null || psiFile == null || project == null) return false
 
     return ReadAction.compute<Boolean, RuntimeException> {
-        val element = psiFile.findElementAt(editor.caretModel.offset) ?: return@compute false
-        val method = PsiTreeUtil.getParentOfType(element, PsiMethod::class.java) ?: return@compute false
-        method.annotations.any { ann -> ann.qualifiedName in MAPPING_ANNOTATION_FQNS }
+        val element = psiFile.findElementAt(editor.caretModel.offset)
+        val method = PsiTreeUtil.getParentOfType(element, PsiMethod::class.java)
+        method?.annotations?.any { ann -> ann.qualifiedName in MAPPING_ANNOTATION_FQNS } ?: false
     }
 }
 
 /**
- * 「复制接口 URL」动作基类：提供轻量的 PsiMethod → EndpointInfo 解析（不复用/不触发
- * SpringControllerParser.parseControllerClass 的重型 JSON 骨架解析），并负责从光标处
- * 所在模块的 resources 下 application.yml/.yaml/.properties 解析 server.port（默认 8080）。
+ * 「复制接口 URL」动作基类：调用 [SpringControllerParser.parseControllerClass] 复用与接口列表
+ * 完全一致的端点/参数解析（含 @RequestBody 的 JSON 模板与 @RequestHeader），并从光标处所在模块
+ * 的 resources 下 application.yml/.yaml/.properties 解析 server.port（默认 8080）。
  *
  * 子类仅需覆写 [getOutputText] 决定复制的内容。
  */
@@ -133,187 +134,42 @@ abstract class EndpointUrlAction : AnAction(), DumbAware {
         curl: String
     ): String
 
-    // ======================== 端点信息提取（轻量，不触发重型解析） ========================
+    // ======================== 端点信息提取（复用 SpringControllerParser） ========================
 
     /**
-     * 从方法上提取端点信息：
-     * 1. 方法级映射注解（@GetMapping 等 / @RequestMapping + method 属性）→ HTTP 方法与路径
-     * 2. 类级 @RequestMapping → path 前缀
-     * 3. 参数：@PathVariable / @RequestParam / @RequestBody
+     * 从方法上提取端点信息。
      *
-     * @return 方法上不存在任何 HTTP 映射注解时返回 null
+     * 复用 [SpringControllerParser.parseControllerClass]（public，解析整个类的所有方法，含
+     * @RequestBody 的 bodyJsonSkeleton/bodyJsonTemplate 与 @RequestHeader），再按方法名在
+     * [com.myhope.sync.model.ControllerGroup.endpoints] 中定位光标所在 [PsiMethod] 对应的端点，
+     * 直接消费 [com.myhope.sync.model.SpringEndpoint] 与 [com.myhope.sync.model.EndpointParameter]，
+     * 与插件接口列表的参数处理完全对齐。
+     *
+     * @return 方法所在类非 Controller / 解析失败 / 方法无映射注解时返回 null
      */
     protected fun extractEndpointInfo(method: PsiMethod): EndpointInfo? {
-        var httpMethod: String? = null
-        var methodPath: String? = null
-
-        for (annotation in method.annotations) {
-            val qualifiedName = annotation.qualifiedName ?: continue
-            val resolved = resolveHttpMapping(annotation, qualifiedName) ?: continue
-            httpMethod = resolved.httpMethod
-            methodPath = resolved.path
-            break
-        }
-
-        val finalMethod = httpMethod ?: return null
-        val finalPath = methodPath ?: ""
-
         val psiClass = method.containingClass ?: return null
-        val classLevelPath = extractClassLevelPath(psiClass)
-        val fullPath = normalizePath(classLevelPath, finalPath)
-
-        val (pathVariables, queryParams, hasRequestBody) = collectParameters(method)
+        val project = method.project
+        val group = SpringControllerParser(project).parseControllerClass(psiClass) ?: return null
+        // 单个方法可能有多个映射注解（多 endpoint），取匹配的第一个即可
+        val endpoint = group.endpoints.firstOrNull { it.methodName == method.name } ?: return null
         return EndpointInfo(
-            fullPath = fullPath,
-            httpMethod = finalMethod,
-            pathVariables = pathVariables,
-            queryParams = queryParams,
-            hasRequestBody = hasRequestBody
+            fullPath = endpoint.fullPath, // 直接用 parser 算好的（含类级前缀）
+            httpMethod = endpoint.httpMethod.name, // HttpMethod → "GET" 等字符串
+            pathVariables = endpoint.parameters.filter { it.source == ParamSource.PATH }.map { it.name to it.name },
+            queryParams = endpoint.parameters.filter { it.source == ParamSource.QUERY }.map { q ->
+                QueryParam(name = q.name, type = q.type, required = q.required, defaultValue = q.defaultValue)
+            },
+            // @RequestBody 的真实占位 JSON 模板，如 {"name":"string","age":0}
+            bodyTemplates = endpoint.parameters.filter { it.source == ParamSource.BODY }
+                .mapNotNull { it.bodyJsonTemplate },
+            // @RequestHeader 的 (header 名, 默认值/占位)
+            headers = endpoint.parameters.filter { it.source == ParamSource.HEADER }
+                .map { h -> h.name to (h.defaultValue ?: "") }
         )
     }
 
-    private data class ResolvedMapping(val httpMethod: String, val path: String)
-
-    /**
-     * 将方法级映射注解解析为 (HTTP 方法, 路径)。
-     * @RequestMapping 未声明 method 时默认 GET。
-     */
-    private fun resolveHttpMapping(annotation: PsiAnnotation, qualifiedName: String): ResolvedMapping? {
-        val path = getPathFromAnnotation(annotation) ?: ""
-        val httpMethod: String? = when (qualifiedName) {
-            ANNOTATION_REQUEST_MAPPING -> extractHttpMethodFromRequestMapping(annotation)
-            ANNOTATION_GET_MAPPING -> "GET"
-            ANNOTATION_POST_MAPPING -> "POST"
-            ANNOTATION_PUT_MAPPING -> "PUT"
-            ANNOTATION_DELETE_MAPPING -> "DELETE"
-            ANNOTATION_PATCH_MAPPING -> "PATCH"
-            else -> null
-        }
-        val method = httpMethod ?: return null
-        return ResolvedMapping(method, path)
-    }
-
-    private fun extractHttpMethodFromRequestMapping(annotation: PsiAnnotation): String? {
-        val methodAttr = annotation.findAttributeValue("method") ?: return "GET"
-        val candidates: Sequence<PsiAnnotationMemberValue> = when (methodAttr) {
-            is PsiArrayInitializerMemberValue -> methodAttr.initializers.asSequence()
-            else -> sequenceOf(methodAttr)
-        }
-        for (candidate in candidates) {
-            val reference = candidate as? PsiReferenceExpression ?: continue
-            val resolved = reference.resolve()
-            if (resolved is PsiEnumConstant) return resolved.name
-            // 无法 resolve 时退回从文本尾部截取枚举名
-            val name = reference.text.substringAfterLast('.')
-            if (name in HTTP_METHOD_NAMES) return name
-        }
-        return null
-    }
-
-    private fun extractClassLevelPath(psiClass: PsiClass): String {
-        val annotation = psiClass.annotations
-            .firstOrNull { it.qualifiedName == ANNOTATION_REQUEST_MAPPING }
-            ?: return ""
-        return getPathFromAnnotation(annotation) ?: ""
-    }
-
-    // ======================== 方法参数解析 ========================
-
-    private fun collectParameters(
-        method: PsiMethod
-    ): Triple<List<Pair<String, String>>, List<QueryParam>, Boolean> {
-        val pathVariables = mutableListOf<Pair<String, String>>()
-        val queryParams = mutableListOf<QueryParam>()
-        var hasRequestBody = false
-
-        for (param in method.parameterList.parameters) {
-            var matched = false
-            for (annotation in param.annotations) {
-                when (annotation.qualifiedName) {
-                    ANNOTATION_PATH_VARIABLE -> {
-                        val name = annotationName(annotation) ?: param.name ?: ""
-                        pathVariables.add(name to param.type.presentableText)
-                        matched = true
-                    }
-                    ANNOTATION_REQUEST_PARAM -> {
-                        val name = annotationName(annotation) ?: param.name ?: ""
-                        queryParams.add(
-                            QueryParam(
-                                name = name,
-                                type = param.type.presentableText,
-                                required = readBooleanAttribute(annotation, "required", default = true),
-                                defaultValue = readDeclaredStringAttribute(annotation, "defaultValue")
-                            )
-                        )
-                        matched = true
-                    }
-                    ANNOTATION_REQUEST_BODY -> {
-                        hasRequestBody = true
-                        matched = true
-                    }
-                }
-                if (matched) break
-            }
-            // 无 Spring 参数注解的简单类型参数 → 按 Spring 默认语义视为必填 query 参数
-            if (!matched && isSimpleType(param)) {
-                queryParams.add(
-                    QueryParam(name = param.name ?: "", type = param.type.presentableText, required = true, defaultValue = null)
-                )
-            }
-        }
-        return Triple(pathVariables, queryParams, hasRequestBody)
-    }
-
-    /** @PathVariable / @RequestParam 的 value/name 属性显式参数名。 */
-    private fun annotationName(annotation: PsiAnnotation): String? {
-        for (attr in listOf("value", "name")) {
-            val attrValue = annotation.findAttributeValue(attr) ?: continue
-            val value = extractStringValue(attrValue)
-            if (!value.isNullOrBlank()) return value
-        }
-        return null
-    }
-
-    private fun readBooleanAttribute(annotation: PsiAnnotation, attributeName: String, default: Boolean): Boolean {
-        val attrValue = annotation.findAttributeValue(attributeName) ?: return default
-        val literal = attrValue as? PsiLiteralExpression ?: return default
-        return (literal.value as? Boolean) ?: default
-    }
-
-    private fun readDeclaredStringAttribute(annotation: PsiAnnotation, attributeName: String): String? {
-        val attrValue = annotation.findDeclaredAttributeValue(attributeName) ?: return null
-        return extractStringValue(attrValue)
-    }
-
-    /** 简单类型（原始类型 / java.* JDK 值类型）视为可直接绑定 query 参数的标量。 */
-    private fun isSimpleType(param: PsiParameter): Boolean {
-        val type = param.type
-        if (type is PsiPrimitiveType) return true
-        val classType = type as? PsiClassType ?: return false
-        val resolved = classType.resolve() ?: return false
-        val qualifiedName = resolved.qualifiedName ?: return false
-        if (qualifiedName.startsWith("java.lang.") ||
-            qualifiedName.startsWith("java.math.") ||
-            qualifiedName.startsWith("java.time.")
-        ) {
-            return true
-        }
-        return qualifiedName == "java.util.Date" || qualifiedName == "java.util.UUID"
-    }
-
     // ======================== URL / curl 构造 ========================
-
-    /** 拼接类级 path 与方法级 path，统一以单个 / 开头、中间单 / 分隔。 */
-    private fun normalizePath(classLevelPath: String, methodPath: String): String {
-        val classPart = classLevelPath.trim('/')
-        val methodPart = methodPath.trim('/')
-        return when {
-            classPart.isEmpty() && methodPart.isEmpty() -> "/"
-            classPart.isEmpty() -> "/$methodPart"
-            methodPart.isEmpty() -> "/$classPart"
-            else -> "/$classPart/$methodPart"
-        }
-    }
 
     /**
      * 生成查询串（含开头的 ?）：
@@ -332,12 +188,26 @@ abstract class EndpointUrlAction : AnAction(), DumbAware {
         return "?" + parts.joinToString("&")
     }
 
-    /** 生成 curl 命令；@RequestBody 时追加 JSON Content-Type 头与空 body 占位。 */
+    /**
+     * 生成 curl 命令：
+     * - 有 @RequestBody（bodyTemplates 非空）→ 追加 `-H 'Content-Type: application/json' -d '<JSON 模板>'`
+     *   （多个 body 罕见，取第一个）
+     * - 有 @RequestHeader → 每个 header 追加 `-H 'name: value'`（value 为空串也加，让用户填）
+     */
     private fun buildCurlCommand(info: EndpointInfo, urlWithQuery: String): String {
         val builder = StringBuilder("curl -X ${info.httpMethod} '")
         builder.append(urlWithQuery).append('\'')
-        if (info.hasRequestBody) {
-            builder.append(" -H 'Content-Type: application/json' -d '{}'")
+        info.bodyTemplates.firstOrNull()?.let { template ->
+            builder.append(" -H 'Content-Type: application/json' -d '")
+                .append(template)
+                .append('\'')
+        }
+        for ((name, value) in info.headers) {
+            builder.append(" -H '")
+                .append(name)
+                .append(": ")
+                .append(value)
+                .append('\'')
         }
         return builder.toString()
     }
@@ -429,46 +299,6 @@ abstract class EndpointUrlAction : AnAction(), DumbAware {
         return null
     }
 
-    // ======================== 注解属性字符串提取 ========================
-
-    /** 从注解中提取 path（value / path 属性），数组形式取首个。 */
-    private fun getPathFromAnnotation(annotation: PsiAnnotation): String? {
-        for (attr in listOf("value", "path")) {
-            val attrValue = annotation.findAttributeValue(attr) ?: continue
-            val path = when (attrValue) {
-                is PsiArrayInitializerMemberValue ->
-                    attrValue.initializers.firstOrNull()?.let { extractStringValue(it) }
-                else -> extractStringValue(attrValue)
-            }
-            if (!path.isNullOrBlank()) return path
-        }
-        return null
-    }
-
-    /**
-     * 从注解成员值中提取字符串：
-     * - PsiLiteralExpression（字符串字面量）
-     * - PsiReferenceExpression（编译期常量引用，解析到带初始化器的字段）
-     */
-    private fun extractStringValue(value: PsiAnnotationMemberValue): String? {
-        return when (value) {
-            is PsiLiteralExpression -> value.value?.toString()
-            is PsiReferenceExpression -> {
-                val resolved = value.resolve()
-                if (resolved is PsiField && resolved.hasInitializer()) {
-                    val initializer = resolved.initializer
-                    when (initializer) {
-                        is PsiLiteralExpression -> initializer.value?.toString()
-                        else -> initializer?.text?.trim('"')
-                    }
-                } else {
-                    null
-                }
-            }
-            else -> null
-        }
-    }
-
     /** actionPerformed 计算出的中间产物。 */
     private data class ResolvedOutput(
         val info: EndpointInfo,
@@ -476,8 +306,4 @@ abstract class EndpointUrlAction : AnAction(), DumbAware {
         val urlWithQuery: String,
         val curl: String
     )
-
-    private companion object {
-        val HTTP_METHOD_NAMES = setOf("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE")
-    }
 }
