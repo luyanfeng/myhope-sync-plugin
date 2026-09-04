@@ -1,6 +1,7 @@
 package com.myhope.sync.service
 
 import com.intellij.notification.*
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.StartupActivity
 import com.myhope.sync.myhope.MyHopeClient
@@ -99,17 +100,19 @@ class MyHopeStartupActivity : StartupActivity.Background {
 
     /** 弹"绑定已被顶掉"通知，携带【重新绑定】按钮（点击才重新绑定，不自动抢回）。 */
     private fun notifyBindingLost(project: Project) {
-        Notifications.Bus.notify(
-            Notification(
-                "MyHope Sync",
-                I18n.message(project, "notification.bindingLost.title"),
-                I18n.message(project, "notification.bindingLost.content"),
-                NotificationType.WARNING
-            ).addAction(NotificationAction.createSimple(
-                I18n.message(project, "notification.bindingLost.action.rebind")
-            ) { rebindBinding(project) }),
-            project
-        )
+        ApplicationManager.getApplication().invokeLater {
+            Notifications.Bus.notify(
+                Notification(
+                    "MyHope Sync",
+                    I18n.message(project, "notification.bindingLost.title"),
+                    I18n.message(project, "notification.bindingLost.content"),
+                    NotificationType.WARNING
+                ).addAction(NotificationAction.createSimple(
+                    I18n.message(project, "notification.bindingLost.action.rebind")
+                ) { rebindBinding(project) }),
+                project
+            )
+        }
     }
 
     /**
@@ -134,53 +137,61 @@ class MyHopeStartupActivity : StartupActivity.Background {
                         !b.accessInstanceId.isNullOrBlank() && !b.userAppId.isNullOrBlank()
                     ) {
                         writeBackBinding(project, b.accessInstanceId, b.userAppId)
-                        Notifications.Bus.notify(
-                            Notification(
-                                "MyHope Sync",
-                                I18n.message(project, "notification.rebindSuccess.title"),
-                                I18n.message(project, "notification.rebindSuccess.content"),
-                                NotificationType.INFORMATION
-                            ),
-                            project
-                        )
+                        ApplicationManager.getApplication().invokeLater {
+                            Notifications.Bus.notify(
+                                Notification(
+                                    "MyHope Sync",
+                                    I18n.message(project, "notification.rebindSuccess.title"),
+                                    I18n.message(project, "notification.rebindSuccess.content"),
+                                    NotificationType.INFORMATION
+                                ),
+                                project
+                            )
+                        }
                     } else {
+                        ApplicationManager.getApplication().invokeLater {
+                            Notifications.Bus.notify(
+                                Notification(
+                                    "MyHope Sync",
+                                    I18n.message(project, "notification.bindingLost.title"),
+                                    I18n.message(
+                                        project, "notification.rebindFailed.content",
+                                        result.exceptionOrNull()?.message ?: "服务端未返回 access_instance_id/user_app_id"
+                                    ),
+                                    NotificationType.ERROR
+                                ),
+                                project
+                            )
+                        }
+                    }
+                } else {
+                    ApplicationManager.getApplication().invokeLater {
                         Notifications.Bus.notify(
                             Notification(
                                 "MyHope Sync",
                                 I18n.message(project, "notification.bindingLost.title"),
                                 I18n.message(
                                     project, "notification.rebindFailed.content",
-                                    result.exceptionOrNull()?.message ?: "服务端未返回 access_instance_id/user_app_id"
+                                    result.exceptionOrNull()?.message ?: "绑定失败"
                                 ),
                                 NotificationType.ERROR
                             ),
                             project
                         )
                     }
-                } else {
+                }
+            } catch (e: Throwable) {
+                ApplicationManager.getApplication().invokeLater {
                     Notifications.Bus.notify(
                         Notification(
                             "MyHope Sync",
                             I18n.message(project, "notification.bindingLost.title"),
-                            I18n.message(
-                                project, "notification.rebindFailed.content",
-                                result.exceptionOrNull()?.message ?: "绑定失败"
-                            ),
+                            I18n.message(project, "notification.rebindFailed.content", e.message ?: e.javaClass.simpleName),
                             NotificationType.ERROR
                         ),
                         project
                     )
                 }
-            } catch (e: Throwable) {
-                Notifications.Bus.notify(
-                    Notification(
-                        "MyHope Sync",
-                        I18n.message(project, "notification.bindingLost.title"),
-                        I18n.message(project, "notification.rebindFailed.content", e.message ?: e.javaClass.simpleName),
-                        NotificationType.ERROR
-                    ),
-                    project
-                )
             } finally {
                 client.close()
             }
@@ -188,15 +199,17 @@ class MyHopeStartupActivity : StartupActivity.Background {
     }
 
     private fun notifyServerUnreachable(project: Project, serverUrl: String) {
-        Notifications.Bus.notify(
-            Notification(
-                "MyHope Sync",
-                I18n.message(project, "notification.serverUnreachable.title"),
-                I18n.message(project, "notification.serverUnreachable.content", serverUrl),
-                NotificationType.WARNING
-            ),
-            project
-        )
+        ApplicationManager.getApplication().invokeLater {
+            Notifications.Bus.notify(
+                Notification(
+                    "MyHope Sync",
+                    I18n.message(project, "notification.serverUnreachable.title"),
+                    I18n.message(project, "notification.serverUnreachable.content", serverUrl),
+                    NotificationType.WARNING
+                ),
+                project
+            )
+        }
     }
 
     // ========================================================================

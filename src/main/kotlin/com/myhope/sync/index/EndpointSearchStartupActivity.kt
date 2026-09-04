@@ -18,11 +18,12 @@ class EndpointSearchStartupActivity : ProjectManagerListener {
     override fun projectOpened(project: Project) {
         // 挂 PSI 变更失效监听（按 module 精确失效，改哪模块只清哪模块；轻量，不阻塞）
         EndpointSearchIndex.attachInvalidationListener(project)
-        // 等项目完全打开（启动进度结束后）再后台低优先级预热，不影响操作
+        // 等项目完全打开（启动进度结束后）再后台低优先级预热，不影响操作。
+        // sleep 放在 pooled 线程内延迟，避开启动初始化最忙窗口，不阻塞 EDT。
         StartupManager.getInstance(project).runAfterOpened {
             ApplicationManager.getApplication().executeOnPooledThread(
                 Runnable {
-                    Thread.currentThread().priority = Thread.NORM_PRIORITY - 2 // 低优先级，不与 IDE 抢资源
+                    Thread.sleep(3000) // 延迟，避开启动初始化最忙窗口
                     ApplicationManager.getApplication().runReadAction(
                         Runnable { EndpointSearchIndex.resolveGroups(project, null) }
                     )
