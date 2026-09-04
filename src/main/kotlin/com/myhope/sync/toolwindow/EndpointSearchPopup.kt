@@ -2,8 +2,6 @@ package com.myhope.sync.toolwindow
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileEditorManager
-import com.intellij.openapi.module.Module
-import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.module.ModuleUtil
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
@@ -15,7 +13,6 @@ import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.ui.popup.JBPopupListener
 import com.intellij.openapi.ui.popup.LightweightWindowEvent
 import com.intellij.openapi.util.Computable
-import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiMethod
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.PsiShortNamesCache
@@ -26,6 +23,7 @@ import com.intellij.ui.components.JBTextField
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.util.Alarm
 import com.intellij.util.ui.JBEmptyBorder
+import com.myhope.sync.index.EndpointSearchIndex
 import com.myhope.sync.model.ControllerGroup
 import com.myhope.sync.model.HttpMethod
 import com.myhope.sync.model.SpringEndpoint
@@ -42,7 +40,6 @@ import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 import javax.swing.BoxLayout
 import javax.swing.DefaultListModel
 import javax.swing.JList
@@ -275,17 +272,6 @@ fun showEndpointSearch(project: Project) {
         }
     })
     created.showCenteredInCurrentWindow(project)
-    // 预热：后台提前解析全部 module 的缓存，用户输入首个查询时直接命中，避免首次等 1-3 秒。
-    ProgressManager.getInstance().run(object : Task.Backgroundable(
-        project,
-        I18n.message(project, "search.endpoint.title"),
-        false
-    ) {
-        override fun run(indicator: ProgressIndicator) {
-            indicator.isIndeterminate = true
-            resolveGroups(project, null)
-        }
-    })
 }
 
 /**
@@ -306,8 +292,8 @@ private fun runEndpointSearch(
     ) {
         override fun run(indicator: ProgressIndicator) {
             indicator.isIndeterminate = true
-            // 读按 module 粒度的缓存解析结果（首次触发解析，之后复用，仅该 module 变更时重算）
-            val groups = resolveGroups(project, moduleNames)
+            // 读按 module 粒度的缓存解析结果（命中缓存返回；未命中现场解析该 module）
+            val groups = EndpointSearchIndex.resolveGroups(project, moduleNames)
             val results = groups.flatMap { group ->
                 group.endpoints.map { EndpointSearchItem(group, it) }
             }.filter { buildSearchText(it.group, it.endpoint).contains(query) }
@@ -439,46 +425,3 @@ private fun computeCurrentModule(project: Project): String? {
     return ModuleUtil.findModuleForFile(file, project)?.name
 }
 
-/**
- * 按 module 粒度缓存已解析的 [ControllerGroup]，避免每次搜索都全量重扫 PSI。
- *
- * - 每个 module 一条缓存项；用 [PsiModificationTracker] 的全局修改计数做 stamp，
- *   仅当计数变化时才整体失效重建（代码不变时复用，性能达标）。
- * - IDEA 启动后首次访问触发解析（搜索弹窗会主动预热），之后秒级返回。
- * - key 用 module.name；同一 project 内 module 名唯一。
- */
-private object ControllerIndexCache {
-    private data class Entry(val stamp: Long, val groups: List<ControllerGroup>)
-    // key 用 Module 对象（跨 project 的 Module 实例不同，避免同名 module 串缓存）
-    private val cache = ConcurrentHashMap<Module, Entry>()
-
-    fun get(project: Project, module: Module): List<ControllerGroup> {
-        val stamp = PsiManager.getInstance(project).modificationTracker.modificationCount
-        cache.entries.removeIf { it.value.stamp != stamp } // 代码有改动时清失效项
-        val cached = cache[module]
-        if (cached != null) return cached.groups
-        val groups = try {
-            SpringControllerParser(project).parseModule(module)
-        } catch (e: Exception) {
-            emptyList()
-        }
-        cache[module] = Entry(stamp, groups)
-        return groups
-    }
-
-    /** 清空全部缓存（如需要强制刷新时调用）。 */
-    fun clear() = cache.clear()
-}
-
-/**
- * 解析目标 module 集合的 Controller 分组（优先命中 [ControllerIndexCache]）。
- * [moduleNames] 为 null 表示全部 module；非 null 时只取名称命中的 module。
- * 需在读操作外调用时自行包 [ApplicationManager.getApplication().runReadAction]。
- */
-private fun resolveGroups(project: Project, moduleNames: Set<String>?): List<ControllerGroup> {
-    val modules = ModuleManager.getInstance(project).modules
-    val target = if (moduleNames != null) modules.filter { it.name in moduleNames } else modules.toList()
-    return ApplicationManager.getApplication().runReadAction(Computable {
-        target.flatMap { ControllerIndexCache.get(project, it) }
-    })
-}

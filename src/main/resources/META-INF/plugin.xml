@@ -48,6 +48,7 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <backgroundPostStartupActivity implementation="com.myhope.sync.service.MyHopeStartupActivity"/>
+        <backgroundPostStartupActivity implementation="com.myhope.sync.index.EndpointSearchStartupActivity"/>
 
         <toolWindow
                 id="MyHope Sync"
