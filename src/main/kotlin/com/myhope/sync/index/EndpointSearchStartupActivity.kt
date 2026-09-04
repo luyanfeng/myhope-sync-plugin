@@ -1,9 +1,11 @@
 package com.myhope.sync.index
 
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManagerListener
 import com.intellij.openapi.startup.StartupManager
+import java.lang.management.ManagementFactory
 
 /**
  * 项目打开后异步预热接口搜索索引：提前解析全部 module 的 Controller 缓存，
@@ -15,6 +17,16 @@ import com.intellij.openapi.startup.StartupManager
  */
 class EndpointSearchStartupActivity : ProjectManagerListener {
 
+    private val log = Logger.getInstance(EndpointSearchStartupActivity::class.java)
+
+    // 粗算每个对象的堆字节（量级参考，非精确值），用于估算缓存规模
+    private val BYTES_PER_GROUP = 128        // ControllerGroup + List 容器
+    private val BYTES_PER_ENDPOINT = 384     // SpringEndpoint + path/描述等字段
+    private val BYTES_PER_PARAMETER = 192    // EndpointParameter
+
+    private fun heapUsedBytes(): Long =
+        ManagementFactory.getMemoryMXBean().heapMemoryUsage.used
+
     override fun projectOpened(project: Project) {
         // 挂 PSI 变更失效监听（按 module 精确失效，改哪模块只清哪模块；轻量，不阻塞）
         EndpointSearchIndex.attachInvalidationListener(project)
@@ -24,13 +36,41 @@ class EndpointSearchStartupActivity : ProjectManagerListener {
             ApplicationManager.getApplication().executeOnPooledThread(
                 Runnable {
                     Thread.sleep(3000) // 延迟，避开启动初始化最忙窗口
+                    // ---- 调试打点开始：统计预热后缓存内存占用（评估是否值得改磁盘 sqlite 缓存）----
+                    val heapBefore = heapUsedBytes()
                     ApplicationManager.getApplication().runReadAction(
                         // 预热禁用降级全文件遍历：索引搜索失败返回空而非 scanByFileTraversal，
                         // 避免在后台线程做全项目 PSI resolve 持读锁，拖垮启动/卡 UI。
                         Runnable { EndpointSearchIndex.resolveGroups(project, null, allowFallback = false) }
                     )
+                    val heapAfter = heapUsedBytes()
+                    val stats = EndpointSearchIndex.stats()
+                    // 估算对象图字节（不含 JDK/String 内部缓存等不可控部分，量级参考）
+                    val estimatedBytes =
+                        (stats.controllerGroupCount.toLong() * BYTES_PER_GROUP +
+                            stats.endpointCount.toLong() * BYTES_PER_ENDPOINT +
+                            stats.parameterCount.toLong() * BYTES_PER_PARAMETER).toLong()
+                    log.info(
+                        "[MyHopeSync-Preheat] module=${stats.moduleCount} " +
+                            "controllerGroup=${stats.controllerGroupCount} " +
+                            "endpoint=${stats.endpointCount} " +
+                            "parameter=${stats.parameterCount} " +
+                            "| heap before=${formatBytes(heapBefore)} " +
+                            "after=${formatBytes(heapAfter)} " +
+                            "delta=${formatBytes(heapAfter - heapBefore)} " +
+                            "| estimatedCacheBytes=${formatBytes(estimatedBytes)}"
+                    )
+                    // ---- 调试打点结束 ----
                 }
             )
         }
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        if (bytes < 1024) return "$bytes B"
+        val kb = bytes / 1024.0
+        if (kb < 1024) return String.format("%.1f KB", kb)
+        val mb = kb / 1024.0
+        return String.format("%.2f MB", mb)
     }
 }

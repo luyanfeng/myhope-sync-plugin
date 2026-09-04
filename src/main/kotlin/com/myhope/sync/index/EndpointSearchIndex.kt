@@ -95,4 +95,29 @@ object EndpointSearchIndex {
 
     /** 清空全部缓存（如需要强制刷新时调用）。 */
     fun clear() = cache.clear()
+
+    /** 缓存规模统计（调试用：评估内存占用 / 是否值得落盘 sqlite 缓存）。 */
+    data class CacheStats(
+        val moduleCount: Int,
+        val controllerGroupCount: Int,
+        val endpointCount: Int,
+        val parameterCount: Int
+    )
+
+    /** 汇总当前缓存中各维度的对象规模（线程安全：仅读缓存值，不修改）。 */
+    fun stats(): CacheStats {
+        var moduleCount = 0
+        var controllerGroupCount = 0
+        var endpointCount = 0
+        var parameterCount = 0
+        cache.forEach { (_, groups) ->
+            moduleCount++
+            controllerGroupCount += groups.size
+            for (g in groups) {
+                endpointCount += g.endpoints.size
+                for (e in g.endpoints) parameterCount += e.parameters.size
+            }
+        }
+        return CacheStats(moduleCount, controllerGroupCount, endpointCount, parameterCount)
+    }
 }
