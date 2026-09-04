@@ -268,6 +268,11 @@ fun showEndpointSearch(project: Project) {
     content.add(header, BorderLayout.NORTH)
     content.add(scroll, BorderLayout.CENTER)
 
+    // 输入框有内容时切换「仅限当前模块」→ 立即重新过滤（复用 schedule 的防抖与搜索链路）
+    limitCheck.addActionListener {
+        if (!searchField.text.trim().isEmpty()) schedule()
+    }
+
     showPlaceholder(I18n.message(project, "search.endpoint.typeToSearch"))
     val created = JBPopupFactory.getInstance()
         .createComponentPopupBuilder(content, searchField)
