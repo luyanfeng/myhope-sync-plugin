@@ -39,7 +39,12 @@ object EndpointSearchIndex {
                 emptyList()
             }
         })
-        cache[module] = groups
+        // 只有"允许降级的完整解析"结果才写缓存。
+        // 预热（allowFallback=false，索引搜索）在此项目常返回空集——若写入缓存会污染
+        // 后续搜索（命中空缓存直接返回），导致搜不到接口。故禁用降级的结果不落地。
+        if (allowFallback) {
+            cache[module] = groups
+        }
         return groups
     }
 
