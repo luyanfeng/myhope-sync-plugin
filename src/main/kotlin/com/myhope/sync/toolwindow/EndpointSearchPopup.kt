@@ -106,20 +106,20 @@ fun showEndpointSearch(project: Project) {
     val list = JBList(model)
     list.selectionMode = ListSelectionModel.SINGLE_SELECTION
     list.isFocusable = false // 保持焦点在搜索框，方向键由搜索框统一驱动
-    list.fixedCellHeight = 40
+    list.fixedCellHeight = 50
     list.cellRenderer = EndpointRowRenderer()
 
     val scroll = JBScrollPane(list)
     // 默认宽度 1040 * 1.5，用户可拖拽右下角改尺寸
     scroll.preferredSize = Dimension(1560, 360)
 
-    /** 按可见行数动态收缩列表高度：占位/空结果时收得很矮，结果多时最多到 360。 */
+    /** 按可见行数动态收缩列表高度：占位/空结果时收得很矮，结果多时最多到 8 行高。 */
     fun fitListHeight(rowCount: Int) {
-        // 占位或空结果：显示 1 行的高矮；否则最多显示 8 行（约 320px），并从 preferredSize 同步
+        // 占位或空结果：显示 1 行的高矮；否则最多显示 8 行，并从 preferredSize 同步
         list.visibleRowCount = rowCount.coerceIn(1, 8)
         scroll.preferredSize = Dimension(
             scroll.preferredSize.width,
-            (rowCount.coerceIn(1, 8) * list.fixedCellHeight + 12).coerceAtMost(360)
+            (rowCount.coerceIn(1, 8) * list.fixedCellHeight + 12).coerceAtMost(412)
         )
         // pack(relayoutContent, reposition)：重排内容并重新定位，以匹配收缩后的尺寸
         popup?.pack(false, true)
