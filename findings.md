@@ -1,146 +1,40 @@
-# 研究发现：请求数据生成优化
+# 研究发现：接口搜索增强（拆词/词序/模糊/高亮）
 
-> ⚠️ 已过时（2026-08-31，Hoppscotch→MyHope 改造已完成），内容仅供历史参考。
+> 创建 2026-09-07。旧的 Hoppscotch→MyHope 研究发现（2026-07/08 请求数据生成优化）已过时，归档于文末。
 
-## 分析背景
+## 需求结论（2026-09-07 与用户确认）
 
-从专业 HTTP 测试角度审查 `HoppscotchDataConverter.toHoppscotchRequest()` 生成的请求数据，找出与 Hoppscotch 预期格式 / 真实 Spring Boot 行为之间的差距。
+- 默认模糊子串查询：`order` → `order2`、`abcorder` 都命中（现状保持）
+- 多词自动拆词 AND：`api/order` → `[api, order]`，两者都必须出现（`api/order2`、`abcapi/orderc` 也命中）
+- 「拆词匹配」「忽略词序」两个勾选项（正交）：
+  - 拆词开 + 忽略词序关：词按输入顺序出现（有序贪心扫描）
+  - 拆词开 + 忽略词序开：词序无关（各词独立 contains，AND）
+  - 拆词关：整串子串（= 现状），忽略词序无意义 → 置灰
+- 匹配范围：全字段（方法名/HTTP/URL/类名/描述/参数名），与现状 buildSearchText 一致
+- 大小写：沿用「区分大小写」勾选，过滤与高亮联动
 
-## 当前实现全景
+## 现状代码要点（EndpointSearchPopup.kt）
 
-### 已覆盖的
+- 过滤：`runEndpointSearch` 后台线程 → `groups.flatMap { endpoints.map { EndpointSearchItem } }.filter { buildSearchText(...).contains(query) }`
+- `buildSearchText`：方法名+HTTP+fullPath+path+类名+描述+apiTag+参数名，空格分隔（2026-09-07 已去掉内部 lowercase，保留原始大小写供大小写敏感比较）
+- 高亮：`highlightHtml(text, query, caseSensitive)` 单词黄底 `#fff59d` + 黑字，渲染器 `highlightTerms` 尚未多词化（当前为 highlightQuery 单词 + caseSensitive 属性）
+- 渲染器：`EndpointRowRenderer`，标题行 = 彩色 HTTP 方法 + fullPath + 灰色 tail（类#方法 · in Module），三段分别过 `highlightHtml`
+- schedule()：防抖 2000ms，`rawQuery`/`caseSensitive` 已传到渲染器（区分大小写功能 2026-09-07 完成、未提交）
+- 分页：SEARCH_PAGE_SIZE=300 + NextPageRow 尾行追加（已提交 `85020e1`）；行高 50 / 封顶 8 行（`0fb6cec`）
 
-| 维度 | 行为 |
-|---|---|
-| HTTP Method + 路径 | 完整生成 |
-| 路径变量 | 从 `{id}` 模板提取为 params |
-| `@RequestParam` → URL query params | `?key=value` |
-| 无注解 POJO → 展开为 query params | 递归展开字段 |
-| 无注解 POJO (POST/PUT/PATCH) | query params + form body 双支持（刚修复） |
-| `@RequestBody` → JSON body | 递归类型推导，生成占位 JSON 模板 |
-| `@RequestHeader` → headers | 正确传值 |
-| `consumes` → Content-Type header | 正确设置 |
-| Swagger/Knife4j 描述 | 提取为请求名称 |
-| RequestValidator | 发送前校验 JSON 格式合规 |
+## 性能依据
 
-### `toHoppscotchRequest()` 关键决策点
+- 拆词、词表在每次真实搜索与渲染器设置时各预算 1 次，不随行数放大
+- 每 endpoint 只构建 1 次 searchText；无序 = K 次 contains（K=2~4，O(N·L·K) 毫秒级）；有序 = 单趟贪心扫描
+- 结果增多 → 现有分页 300/页兜底，无渲染风暴风险
+- 高亮：多词区间收集 + 排序合并 + 分段着色，每行 3 段文本、每段几十~百字符，可忽略不计
 
-```mermaid
-flowchart TD
-    A[SpringEndpoint] --> B{参数来源?}
-    B -->|PATH| C[URL 路径参数]
-    B -->|QUERY| D{有 objectFields?}
-    D -->|是| E[展开为多个 query params]
-    D -->|否| F[单个 query param]
-    E --> G{POST/PUT/PATCH?}
-    G -->|是| H[同时加入 formBodyParams]
-    B -->|BODY| I[JSON body 模板]
-    B -->|HEADER| J[请求头]
-    K[构建 body] --> L{formBodyParams 非空?}
-    L -->|是| M[buildFormBody → URL-encoded 字符串]
-    L -->|否| N{有 @RequestBody?}
-    N -->|是| O[buildRequestBodyTemplate → JSON]
-    N -->|否| P[空 body]
-```
+## 风险与对策
 
-## 缺失项分析
+- HTML 嵌套破坏：重叠命中区间必须合并后再着色（多词命中同一区域时）
+- 拆词正则误拆：`{id}` 会被拆成 `{`/`id`/`}` → 词 `id` 可命中 `{id}` 场景；`api/order /xxx/ccc` 会被拆成 4 词全 AND（用户可接受，已在方案中明示）
+- 顺序敏感语义边界：词序关时「api 先于 order」指跨整条 searchText 的顺序（不是严格连续子串），符合"按序贪心扫描"预期
 
-### P0-1: 路径变量缺占位值
+## 历史归档（2026-07/08 请求数据生成优化，已过时）
 
-**文件**：`HoppscotchDataConverter.toHoppscotchRequest()` 行 118-132
-
-```kotlin
-// 当前：所有 value = ""
-params.add(HoppscotchParam(key = paramName, value = "", active = true))
-// 期望：根据 paramType 生成合理占位
-```
-
-但有一个问题：当前路径参数循环中并没有用到 `endpoint.parameters` 里的类型信息（只用了 `name`）。`SpringControllerParser` 解析时已经拿到了每个参数的类型（`endpointParam.type`），但在这段代码中只检查了 `defaultValue`，没有依据类型派生占位值。
-
-**解决方案**：引入一个类型→占位值映射函数（`buildRequestBodyTemplate` 已有类似的类型判断逻辑，可提取复用）：
-- `int`/`Integer`/`long`/`Long` → `"0"` / `"1"`
-- `String` → 参数名本身（如 `"userId"`）
-- `boolean`/`Boolean` → `"true"`
-- `UUID` → UUID 格式占位
-- 其他 → 参数名
-
-### P0-2: MultipartFile / 文件上传未支持
-
-**涉及文件**：
-- `SpringControllerParser.parseSingleParameter()` (484-554) — 未识别 `MultipartFile`
-- `HoppscotchDataConverter.toHoppscotchRequest()` (134-170) — 未特殊处理
-- `HoppscotchDataConverter.buildFormBody()` (300-306) — multipart 格式错误
-- `RequestValidator` (128-132) — 明确指出 multipart body 应为数组
-
-**当前行为**：`MultipartFile file` → 无 Spring 注解 → QUERY + `objectFields=[]` → `?file=`
-
-**期望行为**：
-1. 解析时识别 `MultipartFile` / `org.springframework.web.multipart.MultipartFile`
-2. 标记参数来源（可设新 `ParamSource.FILE` 或复用于 `ParamSource.QUERY` + 额外标记）
-3. 生成 multipart/form-data body（Hoppscotch 预期为 JSON 数组 `[{key, value, type}]`）
-
-**检测策略**：在 `parseSingleParameter()` 中，当未匹配到 Spring 注解时，检查参数类型是否为 `MultipartFile`（完整类名或简名匹配）。
-
-### P1-1: multipart/form-data body 格式错误
-
-**文件**：`HoppscotchDataConverter.buildFormBody()` (300-306)
-
-```kotlin
-// 当前：对任何 form 类型都生成 URL-encoded 字符串
-val body = formParams.joinToString("&") { ep ->
-    "${ep.name}=${ep.value}"
-}
-
-// Hoppscotch 期望：
-// - application/x-www-form-urlencoded → body = "key=value&k2=v2" (字符串) ✅
-// - multipart/form-data → body = [{key:"file", value:"", type:"file"}] (数组) ❌
-```
-
-注意 `buildFormBody` 签名为 `contentType: String?`，已经能拿到 Content-Type。据此分支输出不同格式即可。
-
-同时 `HoppscotchBody` 的 `body` 字段是 `String?`，所以 multipart 数组需要序列化为 JSON 字符串存入。
-
-### P1-2: 参数类型感知的默认值
-
-**涉及文件**：`HoppscotchDataConverter.toHoppscotchRequest()` — query params 循环 (134-170)
-
-当前所有 query param 的 value 都是 `""`，包括数值型和布尔型参数。`@RequestParam int count` → `?count=`（不好用）。
-
-**解决方案**：对简单类型使用 `EndpointParameter.type` 派生默认值：
-- 数值类型 → `"0"`
-- 布尔 → `"true"`
-- 字符串 → `""` （保持现状）
-
-`buildRequestBodyTemplate` 已有 `typeHint in listOf(...)` 映射，抽成工具函数复用。
-
-### P1-3: 路径变量参数类型未正确传递（隐含问题）
-
-当前路径参数循环只用了 `endpoint.parameters.find { it.name == paramName && it.source == ParamSource.PATH }` 来找到参数。如果找不到（路径中有 `{id}` 但参数列表中无对应 PATH 参数），则直接 `HoppscotchParam(key = paramName, value = "")`。这个回退路径中，参数类型信息缺失了。
-
-需要确保路径变量一定有对应的 `EndpointParameter`，以便获取 `type` 信息来决定占位值。
-
-## Hoppscotch 请求数据模型参考
-
-```kotlin
-data class HoppscotchBody(
-    val contentType: String? = null,   // 如 "application/json", "application/x-www-form-urlencoded", "multipart/form-data"
-    val body: String? = null           // JSON 字符串 / URL-encoded 字符串 / 序列化后的数组
-)
-
-data class HoppscotchRequest(
-    val v: String = "17",
-    val name: String,
-    val method: String,
-    val endpoint: String,
-    val params: List<HoppscotchParam> = emptyList(),
-    val headers: List<HoppscotchHeader> = emptyList(),
-    val body: HoppscotchBody = HoppscotchBody(),
-    val auth: HoppscotchAuth = HoppscotchAuth(),       // 暂未用到
-    val preRequestScript: String = "",                   // 暂未用到
-    val testScript: String = "",                         // 暂未用到
-    val requestVariables: List<HoppscotchVariable> = emptyList(),  // 暂未用到
-    val responses: Map<String, Any> = emptyMap()         // 暂未用到
-)
-```
-
-**注意**：`body` 字段是 `String?`，所以 multipart 数组需序列化为 JSON 字符串传入。
+- 原 findings.md 记录了 P0-1 路径变量占位值 / P0-2 MultipartFile / P1-1 multipart 格式 / P1-2 类型感知默认值等 Hoppscotch 阶段研究，全部已完成并随 Hoppscotch→MyHope 改造（2026-08-31）落地，不再适用
