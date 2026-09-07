@@ -99,6 +99,8 @@
                     class="com.myhope.sync.action.CopyPathAction" text="Copy Path Only"/>
             <action id="com.myhope.sync.action.CopyCurlAction"
                     class="com.myhope.sync.action.CopyCurlAction" text="Copy as cURL"/>
+            <action id="com.myhope.sync.action.CopyClassToJsonAction"
+                    class="com.myhope.sync.action.CopyClassToJsonAction" text="Copy to JSON"/>
         </group>
     </actions>
 </idea-plugin>

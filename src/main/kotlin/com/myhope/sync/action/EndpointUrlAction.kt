@@ -10,9 +10,17 @@ import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.editor.Editor
+import com.intellij.psi.JavaPsiFacade
+import com.intellij.psi.PsiClass
+import com.intellij.psi.PsiDocumentManager
+import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiMethod
+import com.intellij.psi.PsiType
+import com.intellij.psi.PsiTypeElement
+import com.intellij.psi.PsiVariable
 import com.intellij.psi.util.PsiTreeUtil
 import com.myhope.sync.model.ParamSource
 import com.myhope.sync.psi.SpringControllerParser
@@ -84,6 +92,65 @@ internal fun isCursorOnSpringMethod(e: AnActionEvent): Boolean {
         val method = PsiTreeUtil.getParentOfType(element, PsiMethod::class.java)
         method?.annotations?.any { ann -> ann.qualifiedName in MAPPING_ANNOTATION_FQNS } ?: false
     }
+}
+
+// ======================== Copy to JSON（JavaBean → JSON 模板） ========================
+
+/**
+ * 提供「Copy to JSON」的可见性判断与目标类型解析。
+ *
+ * 支持三种光标位置（psf 由 [resolveTargetPsiType] 统一解析）：
+ * 1. Java 类型元素上 —— 参数类型（如 `@Valid PaperlessRewritePDFInputVO vo` 的参数类型名）、
+ *    局部变量类型、字段类型、方法返回类型、泛型实参等（光标在类型名、类引用上）；
+ * 2. 变量声明名上 —— 参数名（`vo`）、局部变量名、字段名（类型元素是其兄弟节点）；
+ * 3. 类声明头部 —— 类名、修饰符、注解、`extends`/`implements` 子句、`class` 关键字等。
+ *
+ * 均以 [PsiMethod] 为祖先停止边界：光标落在方法体/方法签名内既不会向上误命中外层类，
+ * 也不会穿透到其他方法的类型元素。
+ */
+
+/** 光标是否停留在可直接转 JSON 的 Java 类型/类声明头部上（供 update 简单判定）。 */
+internal fun isCursorOnJavaType(e: AnActionEvent): Boolean {
+    val editor = e.getData(CommonDataKeys.EDITOR)
+    val project = e.project
+    if (editor == null || project == null) return false
+    return ReadAction.compute<Boolean, RuntimeException> {
+        resolveTargetPsiType(editor, project) != null
+    }
+}
+
+/**
+ * 解析光标处可转 JSON 的目标 [PsiType]：
+ * - 命中类型元素（参数/局部变量/字段/返回类型等）→ 返回其类型
+ * - 命中变量声明名 → 返回该变量的类型
+ * - 光标在类声明头部 → 返回该类生成的类型
+ * - 都不命中 → null
+ */
+internal fun resolveTargetPsiType(editor: Editor, project: Project): PsiType? {
+    val psiFile = PsiDocumentManager.getInstance(project).getPsiFile(editor.document) ?: return null
+    val element = psiFile.findElementAt(editor.caretModel.offset) ?: return null
+
+    // 沿祖先链向上，分别命中：类型元素（参数/局部变量/字段/返回类型，含类型名上的类引用）→ 其类型；
+    // 变量声明名（参数名/局部变量名/字段名）→ 该变量的类型；类声明头部 → 该类生成的类型。
+    // 遇到 [PsiMethod] 即停止（方法体/方法签名内不会穿透到外层类或其他方法的类型元素）。
+    var cur: PsiElement? = element
+    while (cur != null && cur !is PsiMethod) {
+        when (cur) {
+            is PsiTypeElement -> return cur.type
+            is PsiVariable -> return cur.type
+            is PsiClass -> {
+                // 仅类声明头部（`{` 之前：类名/修饰符/注解/extends 等）可触发；
+                // 类体内空白/成员内会被 PsiMethod 边界或该校验排除，避免光标在类体任意位置误生成整类 JSON
+                val lBraceOffset = cur.lBrace?.textOffset ?: Int.MAX_VALUE
+                if (element.textOffset < lBraceOffset) {
+                    return JavaPsiFacade.getElementFactory(project).createType(cur)
+                }
+                return null
+            }
+        }
+        cur = cur.parent
+    }
+    return null
 }
 
 /**

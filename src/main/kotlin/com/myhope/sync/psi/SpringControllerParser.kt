@@ -749,6 +749,17 @@ class SpringControllerParser(private val project: Project) {
     }
 
     /**
+     * 将任意 [PsiType] 递归展开为 JSON 模板（真实占位值）。
+     *
+     * 与 @RequestBody 参数的模板生成逻辑完全一致：String→`""`、int→`0`、boolean→`false`、
+     * 集合→`[]`、Map→`{}`、枚举→`"ENUM"`、UUID→全零串；嵌套对象递归展开非静态字段
+     * （含继承字段，子类同名优先），深度超过 [JSON_SKELETON_MAX_DEPTH] 截断。
+     *
+     * 供「Copy to JSON」右键动作使用，入口外移自 [resolveBodyJsonTemplate]。
+     */
+    fun resolveJsonTemplate(psiType: PsiType): String? = resolveBodyJsonTemplate(psiType)
+
+    /**
      * 递归解析 @RequestBody 参数类型，生成 JSON 同步模板（真实占位值）。
      *
      * 与 [resolveBodyJsonSkeleton] 结构相同，但叶子节点使用可用的默认值：
