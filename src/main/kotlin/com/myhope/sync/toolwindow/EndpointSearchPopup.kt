@@ -34,6 +34,7 @@ import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
 import java.awt.Dimension
+import java.awt.FlowLayout
 import java.awt.event.InputEvent
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
@@ -41,7 +42,7 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.util.Locale
 import javax.swing.BoxLayout
-import javax.swing.DefaultListModel
+import javax.swing.AbstractListModel
 import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.ListCellRenderer
@@ -72,11 +73,69 @@ private class PlaceholderRow(val text: String)
  */
 private class NextPageRow(val label: String)
 
+/**
+ * 批量广播的列表模型：整批元素只触发一次 intervalAdded / intervalRemoved。
+ *
+ * 不能用 [DefaultListModel]：它逐条 addElement 会逐次 fireIntervalAdded，
+ * 触发 BasicListUI/WideSelectionListUI 对 model 全量重算 preferredSize
+ * （每行跑一遍 cellRenderer+BasicHTML 布局），N 条 = O(N²) 次 HTML 布局，
+ * 300 条一页就会让 EDT 冻结数十秒（详见 freeze dump：BasicHTML$Renderer._init_）。
+ * 本模型以 [appendAll]/[setAll] 一次性注入整页，布局只重算 1 次。
+ */
+private class BulkListModel : AbstractListModel<Any>() {
+    private val items = ArrayList<Any>()
+
+    override fun getSize(): Int = items.size
+
+    override fun getElementAt(index: Int): Any = items[index]
+
+    fun get(index: Int): Any = items[index]
+
+    fun isEmpty(): Boolean = items.isEmpty()
+
+    fun lastElement(): Any? = items.lastOrNull()
+
+    /** 清空后一次性注入 [newItems]（旧元素只广播一次 remove、新元素只广播一次 add）。 */
+    fun setAll(newItems: List<Any>) {
+        val oldSize = items.size
+        items.clear()
+        if (oldSize > 0) fireIntervalRemoved(this, 0, oldSize - 1)
+        items.addAll(newItems)
+        if (newItems.isNotEmpty()) fireIntervalAdded(this, 0, items.size - 1)
+    }
+
+    /** 末尾追加一批元素：整批只广播一次 intervalAdded，避免逐条 addElement 触发 O(N²) 布局重算。 */
+    fun appendAll(newItems: List<Any>) {
+        if (newItems.isEmpty()) return
+        val start = items.size
+        items.addAll(newItems)
+        fireIntervalAdded(this, start, items.size - 1)
+    }
+
+    /** 移除末尾单个元素（「下一页」尾行移除场景）。 */
+    fun removeLast() {
+        if (items.isEmpty()) return
+        val idx = items.size - 1
+        items.removeAt(idx)
+        fireIntervalRemoved(this, idx, idx)
+    }
+}
+
 /** 防抖时长（毫秒）：停止输入这么久后才真正执行解析 + 过滤。 */
 private const val SEARCH_DEBOUNCE_MS = 2000L
 
 /** 搜索结果分页大小：每次渲染/追加的结果条数上限，避免 EDT 一次性渲染过多 HTML 行。 */
 private const val SEARCH_PAGE_SIZE = 300
+
+/**
+ * 拆词分隔符：把查询串按非字母数字切分为多个词（`api/order` → `["api", "order"]`），
+ * 多词时按 AND 语义过滤（所有词都必须命中）。
+ */
+private val WORD_SPLIT_REGEX = Regex("[^\\p{L}\\p{N}]+")
+
+/** 按非字母数字拆词；拆不出词（纯符号输入）时返回空列表，由调用方降级为整串匹配。 */
+private fun splitSearchTerms(query: String): List<String> =
+    query.split(WORD_SPLIT_REGEX).filter { it.isNotEmpty() }
 
 /**
  * 弹出式全局端点搜索（类似 ApiPost Helper 的 Ctrl+\ 接口搜索）。
@@ -86,7 +145,7 @@ private const val SEARCH_PAGE_SIZE = 300
  * Controller（[SpringControllerParser.parseAllControllers]）并按关键字过滤。
  */
 fun showEndpointSearch(project: Project) {
-    val model = DefaultListModel<Any>()
+    val model = BulkListModel()
     val debounce = Alarm(Alarm.ThreadToUse.SWING_THREAD)
     // 单调递增的搜索序号：仅最新一次触发的结果允许回填，避免旧请求覆盖新结果。
     var searchCounter = 0
@@ -117,11 +176,26 @@ fun showEndpointSearch(project: Project) {
         }
     }
 
+    // 区分大小写：默认关闭（忽略大小写过滤与高亮），勾选后按输入精确匹配
+    val caseCheck = JBCheckBox(I18n.message(project, "search.endpoint.caseSensitive"))
+
+    // 拆词匹配：默认开启（`api/order` 拆成 api+order，AND 语义）；关闭时整串子串匹配（默认开启时即模糊）
+    val wordMatchCheck = JBCheckBox(I18n.message(project, "search.endpoint.wordMatch")).apply {
+        isSelected = true
+    }
+
+    // 忽略词序：默认开启（各词独立命中即可）；关闭时词按输入顺序出现（仅拆词匹配开启时有意义，关闭拆词时置灰）
+    val ignoreOrderCheck = JBCheckBox(I18n.message(project, "search.endpoint.ignoreOrder")).apply {
+        isSelected = true
+        isEnabled = wordMatchCheck.isSelected
+    }
+
     val list = JBList(model)
     list.selectionMode = ListSelectionModel.SINGLE_SELECTION
     list.isFocusable = false // 保持焦点在搜索框，方向键由搜索框统一驱动
     list.fixedCellHeight = 50
-    list.cellRenderer = EndpointRowRenderer()
+    val renderer = EndpointRowRenderer()
+    list.cellRenderer = renderer
 
     val scroll = JBScrollPane(list)
     // 默认宽度 1040 * 1.5，用户可拖拽右下角改尺寸
@@ -140,8 +214,7 @@ fun showEndpointSearch(project: Project) {
     }
 
     fun showPlaceholder(message: String) {
-        model.clear()
-        model.addElement(PlaceholderRow(message))
+        model.setAll(listOf(PlaceholderRow(message)))
         fitListHeight(1)
     }
 
@@ -152,21 +225,23 @@ fun showEndpointSearch(project: Project) {
     fun appendNextPage() {
         if (shownCount >= pendingResults.size) return
         // 若 model 末尾当前是"下一页"尾行，先移除，再追加新数据（数据接续，非替换）
-        if (!model.isEmpty() && model.lastElement() is NextPageRow) {
-            model.remove(model.size - 1)
+        if (model.lastElement() is NextPageRow) {
+            model.removeLast()
         }
         val take = minOf(SEARCH_PAGE_SIZE, pendingResults.size - shownCount)
         val slice = pendingResults.subList(shownCount, shownCount + take)
-        slice.forEach { model.addElement(it) }
         shownCount += take
-        // 还有更多 → 末尾补"下一页"尾行（文案含进度与总数，用 I18n.message(project, "search.endpoint.loadMore", shownCount, pendingResults.size)）
+        // 本页数据 + 可选的"下一页"尾行合成一批，一次性广播（避免逐条/多次广播触发全量布局重算）
+        val batch = ArrayList<Any>(take + 1)
+        batch.addAll(slice)
         if (shownCount < pendingResults.size) {
-            model.addElement(NextPageRow(I18n.message(project, "search.endpoint.loadMore", shownCount, pendingResults.size)))
+            batch.add(NextPageRow(I18n.message(project, "search.endpoint.loadMore", shownCount, pendingResults.size)))
         }
-        fitListHeight(model.size())
+        model.appendAll(batch)
+        fitListHeight(model.size)
         // 定位到本次追加的首条结果：翻页/首屏后选中并滚动到该行，让用户直接看到新数据
         if (model.isEmpty()) return
-        val firstNewRow = model.size() - 1 - (if (model.lastElement() is NextPageRow) 1 else 0) - (take - 1)
+        val firstNewRow = model.size - 1 - (if (model.lastElement() is NextPageRow) 1 else 0) - (take - 1)
         val newRow = if (firstNewRow >= 0) firstNewRow else 0
         list.selectedIndex = newRow
         list.ensureIndexIsVisible(newRow)
@@ -174,14 +249,13 @@ fun showEndpointSearch(project: Project) {
 
     /** 只渲染第一页：重置分页状态后由 [appendNextPage] 渲染首批结果（或空态占位）。 */
     fun showResults(results: List<EndpointSearchItem>) {
-        model.clear()
-        pendingResults = results
-        shownCount = 0
         if (results.isEmpty()) {
-            model.addElement(PlaceholderRow(I18n.message(project, "search.endpoint.noMatch")))
+            model.setAll(listOf(PlaceholderRow(I18n.message(project, "search.endpoint.noMatch"))))
             fitListHeight(1)
             return
         }
+        pendingResults = results
+        shownCount = 0
         appendNextPage()
     }
 
@@ -212,17 +286,26 @@ fun showEndpointSearch(project: Project) {
         if (historyIndex >= 0 && searchField.text != history.getOrNull(historyIndex)) {
             historyIndex = -1
         }
-        val query = searchField.text.trim().lowercase(Locale.ROOT)
-        if (query.isEmpty()) {
+        val rawQuery = searchField.text.trim()
+        val caseSensitive = caseCheck.isSelected
+        // 拆词：开启时按非字母数字拆分（AND 语义），拆不出词则降级整串；关闭时整串子串匹配（现状行为）
+        val wordMatch = wordMatchCheck.isSelected
+        val terms = if (wordMatch) splitSearchTerms(rawQuery).ifEmpty { listOf(rawQuery) } else listOf(rawQuery)
+        val ignoreOrder = ignoreOrderCheck.isSelected
+        // 同步匹配词到渲染器（保留原始大小写用于展示），供命中片段高亮
+        renderer.highlightTerms = terms
+        renderer.caseSensitive = caseSensitive
+        renderer.ignoreOrder = ignoreOrder
+        if (rawQuery.isEmpty()) {
             showPlaceholder(I18n.message(project, "search.endpoint.typeToSearch"))
             return
         }
         showPlaceholder(I18n.message(project, "search.endpoint.searching"))
         val requestId = ++searchCounter
         debounce.addRequest({
-            recordHistory(query)
+            recordHistory(rawQuery)
             val moduleNames = if (limitCheck.isSelected) setOfNotNull(currentModule) else null
-            runEndpointSearch(project, query, requestId, moduleNames) { results ->
+            runEndpointSearch(project, requestId, moduleNames, caseSensitive, terms, ignoreOrder) { results ->
                 // 弹窗已关闭或期间产生了更新的输入时，丢弃过期结果。
                 if (popup?.isDisposed != true && searchCounter == requestId) {
                     showResults(results)
@@ -241,10 +324,10 @@ fun showEndpointSearch(project: Project) {
     }
 
     fun moveSelection(delta: Int) {
-        if (model.size() == 0) return
+        if (model.size == 0) return
         var next = list.selectedIndex + delta
         if (next < 0) next = 0
-        if (next >= model.size()) next = model.size() - 1
+        if (next >= model.size) next = model.size - 1
         list.selectedIndex = next
         list.ensureIndexIsVisible(next)
     }
@@ -294,12 +377,17 @@ fun showEndpointSearch(project: Project) {
 
     val content = JPanel(BorderLayout())
     content.border = JBEmptyBorder(2, 2, 2, 2)
-    // 标题栏：标题文本左对齐，「仅限当前模块」勾选右对齐
+    // 标题栏：标题文本左对齐，「仅限当前模块」「区分大小写」勾选右对齐
     val titleLabel = JBLabel("<html><b>" + I18n.message(project, "search.endpoint.title") + "</b></html>")
     val titleBar = JPanel(BorderLayout()).apply {
         border = JBEmptyBorder(0, 0, 2, 0)
         add(titleLabel, BorderLayout.CENTER)
-        add(limitCheck, BorderLayout.EAST)
+        val rightChecks = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0)).apply { isOpaque = false }
+        rightChecks.add(limitCheck)
+        rightChecks.add(caseCheck)
+        rightChecks.add(wordMatchCheck)
+        rightChecks.add(ignoreOrderCheck)
+        add(rightChecks, BorderLayout.EAST)
     }
     // 顶部固定高度的标题栏+搜索框垂直堆叠，结果区（scroll）放 CENTER 弹性收缩，
     // 避免搜索框被弹性布局拉得过高。
@@ -313,6 +401,22 @@ fun showEndpointSearch(project: Project) {
 
     // 输入框有内容时切换「仅限当前模块」→ 立即重新过滤（复用 schedule 的防抖与搜索链路）
     limitCheck.addActionListener {
+        if (!searchField.text.trim().isEmpty()) schedule()
+    }
+
+    // 切换「区分大小写」→ 立即按新的匹配模式重新过滤与高亮
+    caseCheck.addActionListener {
+        if (!searchField.text.trim().isEmpty()) schedule()
+    }
+
+    // 切换「拆词匹配」→ 重新过滤；关闭拆词时「忽略词序」失去意义，置灰禁用
+    wordMatchCheck.addActionListener {
+        ignoreOrderCheck.isEnabled = wordMatchCheck.isSelected
+        if (!searchField.text.trim().isEmpty()) schedule()
+    }
+
+    // 切换「忽略词序」→ 重新按词序敏感/无关模式过滤与高亮
+    ignoreOrderCheck.addActionListener {
         if (!searchField.text.trim().isEmpty()) schedule()
     }
 
@@ -335,14 +439,18 @@ fun showEndpointSearch(project: Project) {
 }
 
 /**
- * 在后台线程实时解析当前项目的全部 Controller，按 [query]（小写）过滤，
- * 结果通过 [onResult] 回传（回调切回 EDT）。解析前校验弹窗仍然存活。
+ * 在后台线程实时解析当前项目的全部 Controller，按 [terms] 过滤：所有词 AND 命中
+ * （[ignoreOrder] 为 true 时各词独立查找；为 false 时词按列表顺序贪心出现）。
+ * [caseSensitive] 为 true 时精确匹配，否则忽略大小写。结果通过 [onResult] 回传（回调切回 EDT）。
+ * 解析前校验弹窗仍然存活。
  */
 private fun runEndpointSearch(
     project: Project,
-    query: String,
     requestId: Int,
     moduleNames: Set<String>? = null,
+    caseSensitive: Boolean,
+    terms: List<String>,
+    ignoreOrder: Boolean,
     onResult: (List<EndpointSearchItem>) -> Unit
 ) {
     ProgressManager.getInstance().run(object : Task.Backgroundable(
@@ -356,12 +464,37 @@ private fun runEndpointSearch(
             val groups = EndpointSearchIndex.resolveGroups(project, moduleNames)
             val results = groups.flatMap { group ->
                 group.endpoints.map { EndpointSearchItem(group, it) }
-            }.filter { buildSearchText(it.group, it.endpoint).contains(query) }
+            }.filter { item ->
+                matchSearchText(buildSearchText(item.group, item.endpoint), terms, caseSensitive, ignoreOrder)
+            }
             SwingUtilities.invokeLater {
                 onResult(results)
             }
         }
     })
+}
+
+/**
+ * 判断 [text] 是否命中查询词列表 [terms]：AND 语义（所有词都出现）。
+ * [ignoreOrder] 为 true 时各词独立查找、顺序无关；为 false 时词须按列表顺序贪心出现
+ * （第 k+1 个词只从第 k 个词命中位置之后查找）。
+ * [caseSensitive] 为 true 时精确匹配，否则忽略大小写。空词表视为不命中。
+ */
+private fun matchSearchText(text: String, terms: List<String>, caseSensitive: Boolean, ignoreOrder: Boolean): Boolean {
+    if (terms.isEmpty() || text.isEmpty()) return false
+    val hay = if (caseSensitive) text else text.lowercase(Locale.ROOT)
+    val needles = if (caseSensitive) terms else terms.map { it.lowercase(Locale.ROOT) }
+    if (ignoreOrder) {
+        return needles.all { hay.contains(it) }
+    }
+    // 顺序敏感：贪心顺序扫描，前一个词命中之后才找下一个词
+    var from = 0
+    for (needle in needles) {
+        val idx = hay.indexOf(needle, from)
+        if (idx < 0) return false
+        from = idx + needle.length
+    }
+    return true
 }
 
 /**
@@ -387,26 +520,26 @@ private fun navigateToSource(project: Project, item: EndpointSearchItem) {
 }
 
 /**
- * 构建某一条目的可检索文本（小写）：方法名、HTTP 方法、完整路径、相对路径、
- * Controller 类名、描述、apiTag 以及所有参数名。
+ * 构建某一条目的可检索文本（保留原始大小写，供大小写敏感过滤比较）：
+ * 方法名、HTTP 方法、完整路径、相对路径、Controller 类名、描述、apiTag 以及所有参数名。
  */
 private fun buildSearchText(group: ControllerGroup, endpoint: SpringEndpoint): String = buildString {
-    append(endpoint.methodName.lowercase(Locale.ROOT))
+    append(endpoint.methodName)
     append(' ')
-    append(endpoint.httpMethod.name.lowercase(Locale.ROOT))
+    append(endpoint.httpMethod.name)
     append(' ')
-    append(endpoint.fullPath.lowercase(Locale.ROOT))
+    append(endpoint.fullPath)
     append(' ')
-    append(endpoint.path.lowercase(Locale.ROOT))
+    append(endpoint.path)
     append(' ')
-    append(group.controllerClassName.lowercase(Locale.ROOT))
+    append(group.controllerClassName)
     append(' ')
-    append(endpoint.description?.lowercase(Locale.ROOT) ?: "")
+    append(endpoint.description ?: "")
     append(' ')
-    append(group.apiTag?.lowercase(Locale.ROOT) ?: "")
+    append(group.apiTag ?: "")
     for (parameter in endpoint.parameters) {
         append(' ')
-        append(parameter.name.lowercase(Locale.ROOT))
+        append(parameter.name)
     }
 }
 
@@ -428,6 +561,69 @@ private fun htmlEscape(text: String): String =
     text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 /**
+ * 把 [text] 中所有命中词 [terms] 的片段用黄底黑字标注，返回可直接嵌入
+ * `<html>` 的片段（未命中部分仅做 HTML 转义）。[terms] 为空时原样转义返回。
+ *
+ * 过滤与高亮语义一致：[caseSensitive] 为 true 时精确匹配，否则忽略大小写；
+ * [ignoreOrder] 为 true 时高亮所有词的全部出现位置，否则只高亮按顺序贪心扫描到的命中
+ * （与 [matchSearchText] 的顺序敏感判定一致）。重叠命中区间先合并再着色，避免嵌套 span。
+ */
+private fun highlightHtml(text: String, terms: List<String>, caseSensitive: Boolean, ignoreOrder: Boolean): String {
+    if (terms.isEmpty() || text.isEmpty()) return htmlEscape(text)
+    val hay = if (caseSensitive) text else text.lowercase(Locale.ROOT)
+    val needles = if (caseSensitive) terms else terms.map { it.lowercase(Locale.ROOT) }
+
+    // 收集命中区间（Pair 的 second 为排尾下标，语义与 substring(start, end) 一致）
+    val ranges = ArrayList<Pair<Int, Int>>()
+    if (ignoreOrder) {
+        // 顺序无关：每个词的所有出现位置都收集
+        for (needle in needles) {
+            if (needle.isEmpty()) continue
+            var from = 0
+            while (true) {
+                val idx = hay.indexOf(needle, from)
+                if (idx < 0) break
+                ranges.add(idx to idx + needle.length)
+                from = idx + needle.length
+            }
+        }
+    } else {
+        // 顺序敏感：与过滤一致，贪心扫描每个词的第一个命中
+        var from = 0
+        for (needle in needles) {
+            if (needle.isEmpty()) continue
+            val idx = hay.indexOf(needle, from)
+            if (idx < 0) continue
+            ranges.add(idx to idx + needle.length)
+            from = idx + needle.length
+        }
+    }
+    if (ranges.isEmpty()) return htmlEscape(text)
+
+    // 排序并按 start 合并重叠/相邻区间（相邻区间并成一个 span，避免过度分片）
+    ranges.sortBy { it.first }
+    val merged = ArrayList<Pair<Int, Int>>()
+    for (range in ranges) {
+        val last = merged.lastOrNull()
+        if (last != null && range.first <= last.second) {
+            merged[merged.lastIndex] = last.first to maxOf(last.second, range.second)
+        } else {
+            merged.add(range)
+        }
+    }
+
+    val sb = StringBuilder()
+    var pos = 0
+    for ((start, end) in merged) {
+        sb.append(htmlEscape(text.substring(pos, start)))
+        sb.append("<span style='background-color:#fff59d'><font color='#000000'>${htmlEscape(text.substring(start, end))}</font></span>")
+        pos = end
+    }
+    sb.append(htmlEscape(text.substring(pos)))
+    return sb.toString()
+}
+
+/**
  * 行渲染器：第一行为彩色加粗 HTTP 方法 + 完整路径，第二行灰色显示描述或 Controller 类名。
  * [PlaceholderRow] 渲染为单行灰色斜体提示。
  */
@@ -435,6 +631,15 @@ private class EndpointRowRenderer : ListCellRenderer<Any> {
     private val panel = JPanel()
     private val titleLabel = JBLabel()
     private val subtitleLabel = JBLabel()
+
+    /** 当前搜索框输入的匹配词列表（保留原始大小写）；命中片段在渲染时高亮，空列表不高亮。 */
+    var highlightTerms: List<String> = emptyList()
+
+    /** 是否区分大小写（与搜索过滤保持一致）；true 时高亮精确匹配。 */
+    var caseSensitive: Boolean = false
+
+    /** 是否忽略词序（与搜索过滤保持一致）；true 时高亮所有词的全部出现，false 只高亮顺序贪心命中。 */
+    var ignoreOrder: Boolean = true
 
     init {
         panel.layout = BoxLayout(panel, BoxLayout.Y_AXIS)
@@ -475,9 +680,9 @@ private class EndpointRowRenderer : ListCellRenderer<Any> {
         val displayClass = abbreviateControllerName(item.endpoint.controllerClassQualifiedName)
         val tail = "（$displayClass#${item.endpoint.methodName}）· in Module ${item.group.moduleName}"
         titleLabel.text =
-            "<html><b><font color='$color'>${item.endpoint.httpMethod.name}</font></b>" +
-            "&nbsp;&nbsp;${htmlEscape(item.endpoint.fullPath)}" +
-            "&nbsp;&nbsp;<font color='#8a8a8a'>${htmlEscape(tail)}</font></html>"
+            "<html><b><font color='$color'>${highlightHtml(item.endpoint.httpMethod.name, highlightTerms, caseSensitive, ignoreOrder)}</font></b>" +
+            "&nbsp;&nbsp;${highlightHtml(item.endpoint.fullPath, highlightTerms, caseSensitive, ignoreOrder)}" +
+            "&nbsp;&nbsp;<font color='#8a8a8a'>${highlightHtml(tail, highlightTerms, caseSensitive, ignoreOrder)}</font></html>"
         subtitleLabel.isVisible = false
         return panel
     }
