@@ -224,8 +224,10 @@ fun showEndpointSearch(project: Project) {
      */
     fun appendNextPage() {
         if (shownCount >= pendingResults.size) return
-        // 若 model 末尾当前是"下一页"尾行，先移除，再追加新数据（数据接续，非替换）
-        if (model.lastElement() is NextPageRow) {
+        // 若 model 末尾当前是"下一页"尾行或占位行（输入提示/搜索中/无结果），先移除，再追加新数据
+        // （数据接续，非替换）：占位行不及时移除会一直挂在列表顶部
+        val last = model.lastElement()
+        if (last is NextPageRow || last is PlaceholderRow) {
             model.removeLast()
         }
         val take = minOf(SEARCH_PAGE_SIZE, pendingResults.size - shownCount)
