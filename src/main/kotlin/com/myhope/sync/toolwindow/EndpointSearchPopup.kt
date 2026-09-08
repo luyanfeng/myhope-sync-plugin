@@ -7,6 +7,7 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.wm.WindowManager
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.popup.JBPopup
 import com.intellij.openapi.ui.popup.JBPopupFactory
@@ -35,6 +36,7 @@ import java.awt.Color
 import java.awt.Component
 import java.awt.Dimension
 import java.awt.FlowLayout
+import java.awt.Point
 import java.awt.event.InputEvent
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
@@ -179,9 +181,9 @@ fun showEndpointSearch(project: Project) {
     // 区分大小写：默认关闭（忽略大小写过滤与高亮），勾选后按输入精确匹配
     val caseCheck = JBCheckBox(I18n.message(project, "search.endpoint.caseSensitive"))
 
-    // 拆词匹配：默认开启（`api/order` 拆成 api+order，AND 语义）；关闭时整串子串匹配（默认开启时即模糊）
+    // 拆词匹配：默认关闭（整串子串匹配）；开启后 `api/order` 拆成 api+order，AND 语义
     val wordMatchCheck = JBCheckBox(I18n.message(project, "search.endpoint.wordMatch")).apply {
-        isSelected = true
+        isSelected = false
     }
 
     // 忽略词序：默认开启（各词独立命中即可）；关闭时词按输入顺序出现（仅拆词匹配开启时有意义，关闭拆词时置灰）
@@ -197,7 +199,11 @@ fun showEndpointSearch(project: Project) {
     val renderer = EndpointRowRenderer()
     list.cellRenderer = renderer
 
-    val scroll = JBScrollPane(list)
+    val scroll = JBScrollPane(list).apply {
+        // 去掉结果列表内边框（边框线条由弹窗整体/Header 承担，列表区视觉融入）
+        border = JBEmptyBorder(0, 0, 0, 0)
+        viewportBorder = null
+    }
     // 默认宽度 1040 * 1.5，用户可拖拽右下角改尺寸
     scroll.preferredSize = Dimension(1560, 360)
 
@@ -317,6 +323,11 @@ fun showEndpointSearch(project: Project) {
     }
 
     fun openSelected() {
+        // 未先选中任何行（弹窗刚打开/输入后未用方向键）时，自动定位到第一行，回车即可打开
+        if (list.selectedIndex < 0 && model.size > 0) {
+            list.selectedIndex = 0
+            list.ensureIndexIsVisible(0)
+        }
         val value = list.selectedValue ?: return
         when (value) {
             is NextPageRow -> { appendNextPage(); return } // 翻页不关弹窗
@@ -437,7 +448,23 @@ fun showEndpointSearch(project: Project) {
             debounce.dispose()
         }
     })
-    created.showCenteredInCurrentWindow(project)
+    // 显示位置：窗口水平居中，垂直偏移到上部（弹窗中心位于主窗口高度约 1/3 处而非正居中），
+    // 给下方搜索结果留出空间，避免结果列表出来后还要手动上滚。
+    val anchor = WindowManager.getInstance().getFrame(project)
+    if (anchor != null) {
+        val bounds = anchor.bounds
+        // 弹窗未显示时 size 始终为 null（pack 也不初始化）；用内容组件的 preferredSize 估算
+        // （scroll/header 的 preferredSize 已显式设定，确定非 null）。
+        // 注意：showInScreenCoordinates 的 point 是「弹窗左上角」坐标，不是中心。
+        val size = created.content.preferredSize
+        val topLeft = Point(
+            bounds.x + (bounds.width - size.width) / 2,
+            bounds.y + (bounds.height - size.height) / 3
+        )
+        created.showInScreenCoordinates(anchor, topLeft)
+    } else {
+        created.showCenteredInCurrentWindow(project)
+    }
 }
 
 /**
