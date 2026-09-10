@@ -1,6 +1,7 @@
 package com.myhope.sync.toolwindow
 
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.module.ModuleUtil
 import com.intellij.openapi.progress.ProgressIndicator
@@ -538,7 +539,9 @@ private fun navigateToSource(project: Project, item: EndpointSearchItem) {
             .firstOrNull { it.containingClass?.qualifiedName == qualifiedName }
     })
     if (target != null) {
-        target.navigate(true)
+        // 在 read action 内导航：target.navigate 内部触发 getTextOffset/AST 解析需要 read access，
+        // 从 EDT 直接调用会抛 Read access 异常（平台 OpenSourceUtil.navigate 内部同样是先 runReadAction）
+        ReadAction.run<Throwable> { target.navigate(true) }
     } else {
         Messages.showInfoMessage(
             project,
