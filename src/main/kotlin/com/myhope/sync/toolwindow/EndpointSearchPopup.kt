@@ -1,7 +1,7 @@
 package com.myhope.sync.toolwindow
 
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.application.WriteIntentReadAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.module.ModuleUtil
 import com.intellij.openapi.progress.ProgressIndicator
@@ -539,9 +539,10 @@ private fun navigateToSource(project: Project, item: EndpointSearchItem) {
             .firstOrNull { it.containingClass?.qualifiedName == qualifiedName }
     })
     if (target != null) {
-        // 在 read action 内导航：target.navigate 内部触发 getTextOffset/AST 解析需要 read access，
-        // 从 EDT 直接调用会抛 Read access 异常（平台 OpenSourceUtil.navigate 内部同样是先 runReadAction）
-        ReadAction.run<Throwable> { target.navigate(true) }
+        // navigate 内部既要读 PSI（getDescriptor 需要 read access）又要打开/激活编辑器（需要写意图），
+        // 必须在 WriteIntentReadAction 内执行：它同时满足读访问与写意图，不能用 ReadAction 包裹
+        // （ReadAction 内再请求写意图会死锁，导致 IDEA 卡死）
+        WriteIntentReadAction.run { target.navigate(true) }
     } else {
         Messages.showInfoMessage(
             project,
