@@ -1,6 +1,6 @@
 # AGENTS.md
 
-IntelliJ IDEA 插件（Kotlin，包 `com.myhope.sync`，插件 id `com.myhope.sync`，版本 2.2.0）：把 Spring Boot (Java) Controller 的 REST 端点同步到 myhope-pr-server 的分支快照（`/pr-api/` + X-API-Token + 实例绑定）。
+IntelliJ IDEA 插件（Kotlin，包 `com.myhope.sync`，插件 id `com.myhope.sync`，版本 0.0.1）：把 Spring Boot (Java) Controller 的 REST 端点同步到 myhope-pr-server 的分支快照（`/pr-api/` + X-API-Token + 实例绑定）。
 
 ## 构建与验证
 
@@ -8,7 +8,7 @@ IntelliJ IDEA 插件（Kotlin，包 `com.myhope.sync`，插件 id `com.myhope.sy
 
 ```bash
 source "$HOME/.sdkman/bin/sdkman-init.sh" && sdk env   # .sdkmanrc: java=21.0.11-amzn
-gradle buildPlugin                                    # 首选验证：build/distributions/myhope-sync-plugin-2.2.0.zip
+gradle buildPlugin                                    # 首选验证：build/distributions/myhope-sync-plugin-0.0.1.zip
 gradle runIde --no-configuration-cache                # 沙箱手动验收；缺该参数会挂
 gradle test --tests '*BuildOpsSyncVerificationTest'   # 唯一测试，约 10s~1m40s
 gradle verifyPlugin                                   # 二进制兼容性（IDE 固定 2026.1）
@@ -31,6 +31,8 @@ gradle verifyPlugin                                   # 二进制兼容性（IDE
 ## 同步协议约束（改动核心，别猜）
 
 - 写入**只能**走增量 `client.pushOplog(...)`：`buildOps` 生成 op，≤500/批，409 `occ_conflict` 用 `server_max_seq` 更新水位重推 ≤3 次，无 ops 不推送。**禁止调用全量推送/导入类接口**（分支为空时 buildOps 自然生成全量 create）。
+- 服务端 409 与 200 **body 同构**（per-unit map，`reason` 只可能是 `"occ_conflict"`，没有"内容冲突"这种拒收原因）；`server_max_seq` 恒返回当前水位，冲突时整事务回滚不落库。服务端另有幂等复核：ops 已存在且内容一致 → `accepted=true` 但不推进水位，所以**重复同步是安全的**。
+- `SyncResult.isSuccess` = `failed == 0 && errors.isEmpty()`。只判 `failed` 不够：早退路径用 `failed = totalEndpoints` 计数，选中端点为 0 时会误判成功。同步失败时**绝不能**把行标 SYNCED 或写本地 hash，否则用户以为已推送。
 - 判定语义：request 按 **method + fullPath** 匹配（不看 id，且只在同一 parent 集合内匹配）；collection 按 **title**（限目标目录子树内）。陈旧实体（同 method+url、不同 id）→ update 服务端 id，**绝不新建、绝不 delete、绝不 move**（op 中不允许出现 `move_entity`）。
 - 水位 seq 不本地持久化，每次同步实时 `getOplogHead`（多实例一致）。
 - 认证两个 header：`X-API-Token: api-tok_xxx` + `X-MyHope-Instance-ID: mh_xxx`（`AppSettings.getOrCreateInstanceId()`，每实例唯一）。
@@ -65,6 +67,7 @@ gradle verifyPlugin                                   # 二进制兼容性（IDE
 
 ## 文档与历史包袱
 
-- `README.md`、`README_for_ai.md`、根目录 `plan.md` / `task_plan.md` / `findings.md` / `progress.md` 含**过时内容**：仍有 Hoppscotch 阶段描述、已删除的 `MyHopeVersionChecker`/`RequestValidator`/`AppSettingsConfigurable`、README 里默认端口写成 `3170`（代码实际 `AppSettings.serverUrl` 默认 `http://localhost:3462`）。以代码为准，别照抄。
+- `README.md` 已重写为 MyHope 版本的权威说明（面向用户），`plugin.xml` 的 description/change-notes 与之保持一致；改版本或改功能时要同步这 3 处。
+- 根目录 `plan.md` / `task_plan.md` / `findings.md` / `progress.md` 是 planning-with-files 的历史遗留，含**过时内容**（Hoppscotch 阶段描述、已删除的 `MyHopeVersionChecker`/`RequestValidator`/`AppSettingsConfigurable`）。以代码为准，别照抄。
 - `cleanup.sh` 是 Hoppscotch 时代的遗留脚本（GraphQL 删集合），与当前 myhope 流程无关，不要运行。
 - 联调协议细节见 myhope-pr-server 仓库的 `docs/PR服务客户端接入指南.md`。

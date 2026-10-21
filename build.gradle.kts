@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.myhope.sync"
-            version = "2.2.0"
+            version = "0.0.1"
 
 repositories {
     mavenCentral()
@@ -31,56 +31,64 @@ intellijPlatform {
     pluginConfiguration {
         id = "com.myhope.sync"
             name = "MyHope Sync"
-            version = "2.2.0"
+            version = "0.0.1"
         description = """
-            <h3>English</h3>
-            <p>Sync Spring Boot REST API endpoints to MyHope branch snapshots (myhope-pr-server).</p>
-            <p><b>⚠️ Spring Boot (Java) only.</b></p>
-            <p>Features:</p>
+            <p><b>一个面向 MyHope 的 IDEA 插件</b>，用于从 IDEA 开发工具上向 MyHope Server 服务同步 Java Spring Boot 接口数据。</p>
+            <p><b>⚠️ 仅支持 Java / Spring Boot 项目。</b>Go、Node.js、Python 等其他语言与框架不在支持范围内。</p>
+
+            <h3>功能特点</h3>
             <ul>
-                <li>Parse @RestController and @Controller classes in your project</li>
-                <li>Extract all HTTP endpoints (@RequestMapping, @GetMapping, @PostMapping, etc.)</li>
-                <li>Parse path/query/body/header parameters with JSON skeleton preview</li>
-                <li>Sync to a MyHope branch snapshot via X-API-Token + instance binding + full snapshot overwrite</li>
-                <li>Sync status tracking: SYNCED (green), MODIFIED (blue), UNSYNCED (white)</li>
-                <li>Multi-project/module support in a single IDEA window</li>
-                <li>Selective sync with checkbox — search filters auto-select visible rows</li>
-                <li>Automatic instance binding (access_instance_id / user_app_id)</li>
-                <li>Adjustable table columns (show/hide, reorder, resize with session persistence)</li>
-                <li>Bilingual UI (English / 中文) with instant switch</li>
+                <li><b>接口自动扫描</b> —— 识别 <code>@RestController</code> / <code>@Controller</code> 类，解析
+                    <code>@RequestMapping</code>、<code>@GetMapping</code>、<code>@PostMapping</code>、
+                    <code>@PutMapping</code>、<code>@DeleteMapping</code>、<code>@PatchMapping</code> 全部端点</li>
+                <li><b>参数与请求体解析</b> —— 提取 <code>@PathVariable</code>、<code>@RequestParam</code>、
+                    <code>@RequestBody</code>、<code>@RequestHeader</code>，并生成 JSON 结构骨架预览</li>
+                <li><b>增量同步到 MyHope 分支快照</b> —— 每个 Controller 对应一个集合、每个端点对应一个请求；
+                    以 oplog 增量方式写入目标分支，内容无变化时不推送</li>
+                <li><b>自动实例绑定</b> —— 首次使用自动完成 MyHope 实例绑定（access_instance_id / user_app_id），
+                    绑定状态持久化，无需手工维护</li>
+                <li><b>分支匹配与创建</b> —— 按分支名匹配已有分支，不存在时自动创建；工作空间可选择</li>
+                <li><b>灵活的同步目标</b> —— 可同步到分支根级或指定集合目录，并支持按项目/模块名生成子目录</li>
+                <li><b>同步状态跟踪</b> —— 本地代码与 MyHope 快照双向 hash 对比，标记
+                    <b>已同步</b> / <b>已修改</b> / <b>未同步</b>，一眼看出哪些接口需要重新推送</li>
+                <li><b>并发冲突自动重试</b> —— 写入遇到版本冲突时自动对齐服务端水位重推，最多 3 次；
+                    内容冲突则停止推送并提示到 Web 端处理</li>
+                <li><b>自动发布 PR</b> —— 可选：同步成功后自动从当前分支向目标分支创建 PR，
+                    已有同名进行中 PR 时跳过、不重复创建</li>
+                <li><b>接口搜索弹窗</b> —— <code>Ctrl+\</code> 全局搜索接口，支持按路径 / 方法 / Controller / 注释检索，
+                    拆词匹配、忽略词序、区分大小写、命中高亮；可限定当前模块；<code>Alt+A</code> 回溯搜索历史；
+                    回车或双击直接跳转源码</li>
+                <li><b>编辑器右键菜单</b> —— 复制完整 URL、仅复制路径、复制为 cURL、复制为 JSON 模板</li>
+                <li><b>多模块与选择性同步</b> —— 同一窗口识别多个项目/模块，勾选后只同步选中的接口</li>
+                <li><b>表格易用性</b> —— 关键词过滤（<code>^</code> 前缀为排除模式）、仅已同步过滤、排序、
+                    列显隐与列宽持久化、<code>Ctrl+C</code> 复制单元格、导出 CSV</li>
+                <li><b>按项目隔离的持久化</b> —— 工作空间、分支、同步状态、扫描缓存、列设置按项目独立保存</li>
+                <li><b>中英文界面</b> —— 设置中切换，即时生效</li>
             </ul>
-            <hr>
-            <h3>中文</h3>
-            <p>将 Spring Boot REST API 端点同步到 MyHope 分支快照（myhope-pr-server）。</p>
-            <p><b>⚠️ 仅支持 Spring Boot (Java) 项目。</b></p>
-            <p>功能：</p>
+
+            <h3>使用方式</h3>
+            <ol>
+                <li>打开 <b>Settings → MyHope Sync</b>，填写服务器地址、API Token（<code>api-tok_xxx</code>），
+                    点击 <b>Verify</b> 完成连接校验与实例绑定</li>
+                <li>选择或新建工作空间与分支，按需配置同步目标集合、子目录与自动发布 PR</li>
+                <li>打开 <b>View → Tool Windows → MyHope Sync</b>，选择项目后点击 <b>Refresh</b> 扫描接口</li>
+                <li>勾选要同步的端点（或使用全选 / 反选 / 过滤后自动勾选），点击 <b>Sync Selected</b> 推送</li>
+                <li>点击 <b>Check Sync</b> 与服务端快照比对，刷新每行的同步状态</li>
+                <li>任意位置按 <code>Ctrl+\</code> 呼出接口搜索，快速定位并跳转到源码</li>
+            </ol>
+
+            <h3>系统要求</h3>
             <ul>
-                <li>扫描 @RestController / @Controller 类，提取所有 HTTP 端点</li>
-                <li>解析路径/查询/请求体/请求头参数，展示 JSON 骨架预览</li>
-                <li>通过 X-API-Token + 实例绑定 + 全量快照覆盖同步到 MyHope 分支</li>
-                <li>同步状态追踪：🟢 已同步 / 🔵 已修改 / ⬜ 未同步</li>
-                <li>单窗口多项目/多模块支持</li>
-                <li>复选框选择性同步，搜索过滤自动勾选可见行</li>
-                <li>自动实例绑定（access_instance_id / user_app_id）</li>
-                <li>表格列显隐 / 排序 / 拖拽调整宽度，重启后保留</li>
-                <li>中英文界面即时切换</li>
+                <li>IntelliJ IDEA 2026.1 及以上（Build 261 ~ 262.*）</li>
+                <li>可访问的 MyHope Server 实例，以及 Owner 分发的 API Token</li>
+                <li>仅适用于 Java / Spring Boot 项目</li>
             </ul>
         """.trimIndent()
             changeNotes = """
             <ul>
-                <li><b>2.2.0</b> Wayland 适配: 搜索弹窗宽度/行高改走 JBUI 缩放（修复原生 Wayland 下超宽、行高翻倍）；弹窗改为水平居中（按 locationOnScreen 计算，修复偏右贴边）；支持拖拽标题栏移动弹窗；列表序号/选中列按表头文字自适应宽度；修复「设置列显隐」点击无响应（JPopupMenu 在 Wayland 下绘制崩溃，改用平台 JBPopup）。</li>
-                <li><b>2.1.0</b> 持久化作用域拆分: 工作空间/分支/同步状态/扫描缓存/列设置改为按项目隔离（存于项目 .idea/myhope-sync-project.xml）。老版本全局缓存不再生效，首次打开需重新配置工作空间/分支并刷新扫描。</li>
-                <li><b>2.0.0</b> 全面改造: 从 Hoppscotch 同步转向 myhope-pr-server（X-API-Token + 实例绑定 + 分支快照同步）；包名/插件 id 更名 com.myhope.sync</li>
-                <li><b>1.3.5</b> 新增: 搜索框后"仅已同步"过滤勾选框；状态栏悬停提示复制快捷键；精简 AGENTS.md</li>
-                <li><b>1.3.4</b> Fix: 移除依赖 orderIndex（GraphQL 不暴露该字段），改用 title 确定性匹配以避免集合/请求重复创建；新增 25 项场景化集成测试覆盖 6 个模块（连接/版本/数据转换/同步编排/状态检测/持久化）</li>
-                <li><b>1.3.0</b> 新增: 服务端版本检测；请求 JSON 前置 Zod 校验；请求 Schema 升级至 v17；修复 body 序列化兼容性</li>
-                <li><b>1.2.4</b> Fix: 请求 body 序列化时 Gson 排除 null 字段导致 web 端 Zod 校验失败显示 Untitled</li>
-                <li><b>1.2.3</b> 优化: 集合树查询改为一次 GraphQL 嵌套请求，消除 N+1 懒加载和 Thread.sleep(300)</li>
-                <li><b>1.2.2</b> 优化: 同步状态检查新增 target 模式；集合选择器支持 target 路径显示</li>
-                <li><b>1.2.1</b> Fix: 网络不通时区分「Token 过期」和「服务器不可达」; 移除设置中的帮助链接</li>
-                <li><b>1.2.0</b> 新增: 物理列显隐; 标题列合并入路径列; 接口列显示 @Api tag; 列宽跨会话持久化; 列显隐恢复宽度; 支持以项目及类结构生成子集合</li>
-                <li><b>1.1.0</b> 新增: 标题列; 支持 @ApiOperation 标题; 同步状态持久化 serverId</li>
-                <li><b>1.0.0</b> Initial release</li>
+                <li><b>0.0.1</b> 首个 MyHope 版本：Spring Boot 接口扫描与参数解析、增量同步到 MyHope 分支快照、
+                    实例绑定、同步状态跟踪、自动发布 PR、接口搜索弹窗与编辑器右键动作、多模块选择同步、
+                    表格过滤/列设置/CSV 导出、中英文界面、Wayland 与高分屏适配。</li>
             </ul>
         """.trimIndent()
         ideaVersion {
