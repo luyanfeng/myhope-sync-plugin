@@ -75,6 +75,8 @@
 
     <idea-version since-build="261" until-build="262.*"/>
 
+    <license>https://github.com/luyanfeng/myhope-sync-plugin/blob/master/LICENSE</license>
+
     <depends>com.intellij.java</depends>
     <depends>com.intellij.modules.platform</depends>
 
