@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.myhope.sync"
-            version = "2.1.0"
+            version = "2.2.0"
 
 repositories {
     mavenCentral()
@@ -31,7 +31,7 @@ intellijPlatform {
     pluginConfiguration {
         id = "com.myhope.sync"
             name = "MyHope Sync"
-            version = "2.1.0"
+            version = "2.2.0"
         description = """
             <h3>English</h3>
             <p>Sync Spring Boot REST API endpoints to MyHope branch snapshots (myhope-pr-server).</p>
@@ -68,6 +68,7 @@ intellijPlatform {
         """.trimIndent()
             changeNotes = """
             <ul>
+                <li><b>2.2.0</b> Wayland 适配: 搜索弹窗宽度/行高改走 JBUI 缩放（修复原生 Wayland 下超宽、行高翻倍）；弹窗改为水平居中（按 locationOnScreen 计算，修复偏右贴边）；支持拖拽标题栏移动弹窗；列表序号/选中列按表头文字自适应宽度；修复「设置列显隐」点击无响应（JPopupMenu 在 Wayland 下绘制崩溃，改用平台 JBPopup）。</li>
                 <li><b>2.1.0</b> 持久化作用域拆分: 工作空间/分支/同步状态/扫描缓存/列设置改为按项目隔离（存于项目 .idea/myhope-sync-project.xml）。老版本全局缓存不再生效，首次打开需重新配置工作空间/分支并刷新扫描。</li>
                 <li><b>2.0.0</b> 全面改造: 从 Hoppscotch 同步转向 myhope-pr-server（X-API-Token + 实例绑定 + 分支快照同步）；包名/插件 id 更名 com.myhope.sync</li>
                 <li><b>1.3.5</b> 新增: 搜索框后"仅已同步"过滤勾选框；状态栏悬停提示复制快捷键；精简 AGENTS.md</li>

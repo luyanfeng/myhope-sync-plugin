@@ -28,7 +28,7 @@
 
 | 项目 | 版本 |
 |------|------|
-| 插件版本 | 2.0.0 |
+| 插件版本 | 2.2.0 |
 | since-build | 261 |
 | until-build | 262.* |
 
@@ -42,13 +42,13 @@ sdk env
 gradle buildPlugin
 ```
 
-产物：`build/distributions/myhope-sync-plugin-2.0.0.zip`
+产物：`build/distributions/myhope-sync-plugin-2.2.0.zip`
 
 ### 安装
 
 **本地安装**：
 1. IntelliJ IDEA → Settings → Plugins → ⚙ → Install Plugin from Disk
-2. 选择 `build/distributions/myhope-sync-plugin-2.0.0.zip`
+2. 选择 `build/distributions/myhope-sync-plugin-2.2.0.zip`
 3. 重启 IDE
 
 ### 配置
