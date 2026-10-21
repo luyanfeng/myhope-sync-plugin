@@ -8,7 +8,6 @@ import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManagerListener
-import com.intellij.openapi.startup.StartupManager
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.myhope.sync.model.ControllerGroup
 import com.myhope.sync.psi.SpringControllerParser
@@ -17,8 +16,8 @@ import com.myhope.sync.psi.SpringControllerParser
  * 项目打开后异步预热接口搜索索引：提前解析全部 module 的 Controller 缓存，
  * 用户打开搜索窗时直接命中、秒回。
  *
- * 实现为 [ProjectManagerListener]（而非 StartupActivity），并通过
- * [StartupManager.runAfterOpened] 在项目完全打开后再启动，**不参与 IDE 启动进度**，
+ * 实现为 [ProjectManagerListener]（而非 StartupActivity），预热任务在索引就绪后
+ * 由 [DumbService.runWhenSmart] 触发，**不参与 IDE 启动进度**，
  * 避免启动时因预热导致界面锁住无法操作。
  *
  * 防卡核心：不再用单个大 `runReadAction` 全量解析，而是按 module 拆分为多个
@@ -34,13 +33,11 @@ class EndpointSearchStartupActivity : ProjectManagerListener {
     override fun projectOpened(project: Project) {
         // 挂 PSI 变更失效监听（按 module 精确失效，改哪模块只清哪模块；轻量，不阻塞）
         EndpointSearchIndex.attachInvalidationListener(project)
-        // 等项目完全打开（启动进度结束后）再后台预热，不影响操作。
-        // runWhenSmart：索引就绪后才构造预热任务，避免启动早期做全项目 PSI 遍历。
-        StartupManager.getInstance(project).runAfterOpened {
-            DumbService.getInstance(project).runWhenSmart {
-                if (project.isDisposed) return@runWhenSmart
-                PreheatTask(project).queue()
-            }
+        // 索引就绪（runWhenSmart）后才构造预热任务，避免启动早期做全项目 PSI 遍历。
+        // 预热是后台任务，不参与 IDE 启动进度，也不阻塞 EDT。
+        DumbService.getInstance(project).runWhenSmart {
+            if (project.isDisposed) return@runWhenSmart
+            PreheatTask(project).queue()
         }
     }
 

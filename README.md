@@ -1,5 +1,7 @@
 # MyHope Sync
 
+An IntelliJ IDEA plugin for **MyHope** — sync Java Spring Boot endpoints from your IDE to **MyHope Server**.
+
 一个面向 **MyHope** 的 IntelliJ IDEA 插件，用于从 IDEA 开发工具上向 **MyHope Server** 同步 Java Spring Boot 接口数据。
 
 把项目里的 Spring Boot Controller 扫描成结构化接口清单，增量推送到 MyHope 的分支快照中，让接口文档跟着代码走，无需手工维护。
@@ -76,7 +78,7 @@
 
 | 项目 | 要求 |
 |------|------|
-| IDE | IntelliJ IDEA 2026.1 及以上（Build 261 ~ 262.*） |
+| IDE | IntelliJ IDEA 2026.1 / 2026.2（Build 261 ~ 262.*） |
 | 语言 | Java / Spring Boot 项目 |
 | 服务端 | 可访问的 MyHope Server 实例 |
 | 凭据 | Owner 分发的 API Token（`api-tok_xxx`） |
@@ -130,11 +132,21 @@
 source "$HOME/.sdkman/bin/sdkman-init.sh" && sdk env   # 需要 JDK 21
 
 gradle buildPlugin                                    # 打包，产物在 build/distributions/
+gradle signPlugin                                     # 用 CERT_DIR 下的密钥签名（发布必需）
+gradle verifyPlugin                                   # 二进制兼容性验证（IDEA 2026.1 + 2026.2）
 gradle runIde --no-configuration-cache                # 启动沙箱 IDE 调试（必须加该参数）
-gradle verifyPlugin                                   # 插件兼容性验证
 ```
 
 无 `gradlew`，使用系统 `gradle`。
+
+发布到 JetBrains Marketplace：
+
+- 签名密钥放在**仓库外**的 `CERT_DIR`（默认 `~/IdeaProjects/lyf/ai/myhope-sync-plugin-cert/`，可用环境变量 `CERT_DIR` 覆盖），
+  含 `certificateChain.pem` 与 `privateKey.pem`，**不要提交到版本库**。
+- 凭据走环境变量：`JETBRAINS_TOKEN`（Marketplace Personal Access Token）、
+  `PRIVATE_KEY_PASSWORD`（私钥口令，本仓库私钥未加密故留空）。
+- 首次发布必须先在 [plugins.jetbrains.com](https://plugins.jetbrains.com) 手动上传一次，之后才能用
+  `gradle publishPlugin` 自动发布。
 
 ### 项目结构
 

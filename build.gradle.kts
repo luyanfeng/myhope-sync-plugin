@@ -8,7 +8,12 @@ plugins {
 }
 
 group = "com.myhope.sync"
-            version = "0.0.1"
+            version = "1.0.0"
+
+// 签名密钥目录（仓库外）。可用 CERT_DIR 环境变量覆盖。
+val certDir: java.io.File = file(
+    System.getenv("CERT_DIR") ?: "${System.getProperty("user.home")}/IdeaProjects/lyf/ai/myhope-sync-plugin-cert"
+)
 
 repositories {
     mavenCentral()
@@ -31,8 +36,9 @@ intellijPlatform {
     pluginConfiguration {
         id = "com.myhope.sync"
             name = "MyHope Sync"
-            version = "0.0.1"
+            version = "1.0.0"
         description = """
+            <p><b>An IDEA plugin for MyHope — sync Java Spring Boot endpoints from your IDE to MyHope Server.</b></p>
             <p><b>一个面向 MyHope 的 IDEA 插件</b>，用于从 IDEA 开发工具上向 MyHope Server 服务同步 Java Spring Boot 接口数据。</p>
             <p><b>⚠️ 仅支持 Java / Spring Boot 项目。</b>Go、Node.js、Python 等其他语言与框架不在支持范围内。</p>
 
@@ -79,16 +85,17 @@ intellijPlatform {
 
             <h3>系统要求</h3>
             <ul>
-                <li>IntelliJ IDEA 2026.1 及以上（Build 261 ~ 262.*）</li>
+                <li>IntelliJ IDEA 2026.1 / 2026.2（Build 261 ~ 262.*）</li>
                 <li>可访问的 MyHope Server 实例，以及 Owner 分发的 API Token</li>
                 <li>仅适用于 Java / Spring Boot 项目</li>
             </ul>
         """.trimIndent()
             changeNotes = """
             <ul>
-                <li><b>0.0.1</b> 首个 MyHope 版本：Spring Boot 接口扫描与参数解析、增量同步到 MyHope 分支快照、
+                <li><b>1.0.0</b> 首个正式版：Spring Boot 接口扫描与参数解析、增量同步到 MyHope 分支快照、
                     实例绑定、同步状态跟踪、自动发布 PR、接口搜索弹窗与编辑器右键动作、多模块选择同步、
-                    表格过滤/列设置/CSV 导出、中英文界面、Wayland 与高分屏适配。</li>
+                    表格过滤/列设置/CSV 导出、中英文界面、Wayland 与高分屏适配。
+                    兼容 IntelliJ IDEA 2026.1 与 2026.2（已通过二进制兼容性验证）。</li>
             </ul>
         """.trimIndent()
         ideaVersion {
@@ -103,12 +110,15 @@ intellijPlatform {
     pluginVerification {
         ides {
             ide(IntelliJPlatformType.IntellijIdeaUltimate, "2026.1")
+            ide(IntelliJPlatformType.IntellijIdeaUltimate, "2026.2")
         }
     }
 
+    // 签名：证书链与私钥走文件路径（PRIVATE_KEY/CERTIFICATE_CHAIN 文本形式在此不适用），
+    // 密钥默认放在仓库外的 CERT_DIR，避免私钥进入版本库。
     signing {
-        certificateChain = System.getenv("CERTIFICATE_CHAIN") ?: ""
-        privateKey = System.getenv("PRIVATE_KEY") ?: ""
+        certificateChainFile = file(certDir.resolve("certificateChain.pem"))
+        privateKeyFile = file(certDir.resolve("privateKey.pem"))
         password = System.getenv("PRIVATE_KEY_PASSWORD") ?: ""
     }
     publishing {
