@@ -186,7 +186,7 @@ class MyHopeSyncPanel(private val project: Project) {
             autoResizeMode = JTable.AUTO_RESIZE_OFF
             setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
 
-            // Checkbox column (index 1)
+            // Checkbox column (index 1)：主表这两列随后会被压成 0 宽，实际显示由 frozenTable 负责
             val checkboxColumn = getColumnModel().getColumn(1)
             checkboxColumn.minWidth = 90
             checkboxColumn.preferredWidth = 150
@@ -289,9 +289,14 @@ class MyHopeSyncPanel(private val project: Project) {
             setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
             tableHeader.reorderingAllowed = false
 
-            // 索引列宽度
+            // 索引列宽度：按表头文字宽度自适应，避免像默认 80 那样留出大段空白
             try { getColumn(I18n.message(project, "table.column.index"))?.apply {
-                minWidth = 50; preferredWidth = 80; maxWidth = 130
+                val headerWidth = getFontMetrics(font).stringWidth(
+                    I18n.message(project, "table.column.index")
+                )
+                minWidth = 32
+                preferredWidth = (headerWidth + 24).coerceIn(40, 80)
+                maxWidth = 80
                 // 渲染为 view 序数（过滤/排序后始终从 1 开始）
                 cellRenderer = object : DefaultTableCellRenderer() {
                     override fun getTableCellRendererComponent(
@@ -307,11 +312,17 @@ class MyHopeSyncPanel(private val project: Project) {
                 }
             } } catch (_: Exception) {}
 
-            // 复选框列：显式 JCheckBox 渲染器/编辑器
+            // 复选框列：显式 JCheckBox 渲染器/编辑器。
+            // 宽度按表头文字自适应（不再固定 150）：需同时容纳复选框与表头文字，否则表头被截断成 "Selecte…"。
             val frozenCheckbox = getColumnModel().getColumn(1)
-            frozenCheckbox.minWidth = 90
-            frozenCheckbox.preferredWidth = 150
-            frozenCheckbox.maxWidth = 180
+            val headerMetrics = getFontMetrics(font)
+            val checkboxHeaderWidth = headerMetrics.stringWidth(
+                I18n.message(project, "table.column.checkbox")
+            )
+            val checkboxCellWidth = 40
+            frozenCheckbox.minWidth = 32
+            frozenCheckbox.preferredWidth = (maxOf(checkboxHeaderWidth, checkboxCellWidth) + 20).coerceIn(48, 140)
+            frozenCheckbox.maxWidth = 140
             frozenCheckbox.cellRenderer = object : JCheckBox(), TableCellRenderer {
                 init { isBorderPainted = false; isOpaque = true; horizontalAlignment = SwingConstants.CENTER }
                 override fun getTableCellRendererComponent(
@@ -1123,19 +1134,29 @@ class MyHopeSyncPanel(private val project: Project) {
     }
 
     private fun showColumnPopup() {
-        val popup = JPopupMenu()
         val hidden = ProjectAppSettings.getInstance(project).getHiddenColumnSet()
 
-        for ((colIdx, pair) in columnDefaults.entries.sortedBy { it.key }) {
-            val colName = I18n.message(project, pair.first)
-            val isVisible = colIdx !in hidden
-            val cb = JCheckBox(colName, isVisible)
-            cb.isOpaque = false
-            cb.addActionListener { toggleColumn(colIdx, cb.isSelected) }
-            popup.add(cb)
+        val listPanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            border = BorderFactory.createEmptyBorder(4, 8, 4, 8)
+            for ((colIdx, pair) in columnDefaults.entries.sortedBy { it.key }) {
+                val cb = JCheckBox(I18n.message(project, pair.first), colIdx !in hidden)
+                cb.isOpaque = false
+                cb.addActionListener { toggleColumn(colIdx, cb.isSelected) }
+                add(cb)
+            }
         }
 
-        popup.show(columnsButton, 0, columnsButton.height)
+        // 用平台 JBPopup 而非裸 JPopupMenu：JPopupMenu 会创建带本地装饰的 heavy-weight 窗口，
+        // 在 JBR Wayland 工具包下绘制 0 高度窗口的标题栏会抛 IllegalArgumentException，表现为点击无反应。
+        JBPopupFactory.getInstance()
+            .createComponentPopupBuilder(listPanel, listPanel)
+            .setMovable(false)
+            .setRequestFocus(true)
+            .setCancelOnClickOutside(true)
+            .setCancelOnOtherWindowOpen(true)
+            .createPopup()
+            .showUnderneathOf(columnsButton)
     }
 
     // ====================================================================

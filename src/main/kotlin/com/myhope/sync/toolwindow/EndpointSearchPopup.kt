@@ -23,8 +23,10 @@ import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.components.JBCheckBox
+import com.intellij.ui.WindowMoveListener
 import com.intellij.util.Alarm
 import com.intellij.util.ui.JBEmptyBorder
+import com.intellij.util.ui.JBUI
 import com.myhope.sync.index.EndpointSearchIndex
 import com.myhope.sync.model.ControllerGroup
 import com.myhope.sync.model.HttpMethod
@@ -35,7 +37,6 @@ import com.myhope.sync.util.I18n
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
-import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Point
 import java.awt.event.InputEvent
@@ -131,6 +132,24 @@ private const val SEARCH_DEBOUNCE_MS = 2000L
 private const val SEARCH_PAGE_SIZE = 300
 
 /**
+ * 结果行高（逻辑值，实际取 [JBUI.scale] 后的值）。
+ *
+ * 尺寸一律走 JBUI 缩放：X11 下 IntelliJ 自己按 userScale 缩放（IDE-managed HiDPI），
+ * Wayland 下由 AWT 按 2 倍变换缩放（JRE-managed HiDPI，JBUIScale 的 userScale 恒为 1）。
+ * 直接写裸像素时，后者会被再放大一倍 —— 弹窗变宽、结果行变高的原因即在此。
+ */
+private const val ROW_HEIGHT_UNITS = 25
+
+/** 弹窗内容默认尺寸（逻辑值）。 */
+private const val POPUP_WIDTH_UNITS = 780
+private const val POPUP_LIST_HEIGHT_UNITS = 180
+private const val POPUP_MIN_WIDTH_UNITS = 210
+private const val POPUP_MIN_HEIGHT_UNITS = 120
+
+/** 列表上下内边距合计（逻辑值），参与结果区高度计算。 */
+private const val LIST_PADDING_UNITS = 6
+
+/**
  * 拆词分隔符：把查询串按非字母数字切分为多个词（`api/order` → `["api", "order"]`），
  * 多词时按 AND 语义过滤（所有词都必须命中）。
  */
@@ -196,7 +215,7 @@ fun showEndpointSearch(project: Project) {
     val list = JBList(model)
     list.selectionMode = ListSelectionModel.SINGLE_SELECTION
     list.isFocusable = false // 保持焦点在搜索框，方向键由搜索框统一驱动
-    list.fixedCellHeight = 50
+    list.fixedCellHeight = JBUI.scale(ROW_HEIGHT_UNITS)
     val renderer = EndpointRowRenderer()
     list.cellRenderer = renderer
 
@@ -205,16 +224,18 @@ fun showEndpointSearch(project: Project) {
         border = JBEmptyBorder(0, 0, 0, 0)
         viewportBorder = null
     }
-    // 默认宽度 1040 * 1.5，用户可拖拽右下角改尺寸
-    scroll.preferredSize = Dimension(1560, 360)
+    // 默认宽度与结果区高度按逻辑单位缩放，保证 X11 / Wayland 下视觉一致
+    scroll.preferredSize = JBUI.size(POPUP_WIDTH_UNITS, POPUP_LIST_HEIGHT_UNITS)
 
     /** 按可见行数动态收缩列表高度：占位/空结果时收得很矮，结果多时最多到 8 行高。 */
     fun fitListHeight(rowCount: Int) {
         // 占位或空结果：显示 1 行的高矮；否则最多显示 8 行，并从 preferredSize 同步
-        list.visibleRowCount = rowCount.coerceIn(1, 8)
-        scroll.preferredSize = Dimension(
-            scroll.preferredSize.width,
-            (rowCount.coerceIn(1, 8) * list.fixedCellHeight + 12).coerceAtMost(412)
+        val visibleRows = rowCount.coerceIn(1, 8)
+        list.visibleRowCount = visibleRows
+        // 必须用逻辑单位重新构造：scroll.preferredSize.width 已是缩放后的值，回填再缩放会翻倍
+        scroll.preferredSize = JBUI.size(
+            POPUP_WIDTH_UNITS,
+            visibleRows * ROW_HEIGHT_UNITS + LIST_PADDING_UNITS
         )
         // pack(relayoutContent, reposition)：重排内容并重新定位，以匹配收缩后的尺寸
         popup?.pack(false, true)
@@ -386,7 +407,7 @@ fun showEndpointSearch(project: Project) {
         }
     })
 
-    val topPanel = JPanel(BorderLayout(6, 0))
+    val topPanel = JPanel(BorderLayout(JBUI.scale(6), 0))
     topPanel.add(searchField, BorderLayout.CENTER)
 
     val content = JPanel(BorderLayout())
@@ -396,13 +417,26 @@ fun showEndpointSearch(project: Project) {
     val titleBar = JPanel(BorderLayout()).apply {
         border = JBEmptyBorder(0, 0, 2, 0)
         add(titleLabel, BorderLayout.CENTER)
-        val rightChecks = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0)).apply { isOpaque = false }
+        val rightChecks = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0)).apply { isOpaque = false }
         rightChecks.add(limitCheck)
         rightChecks.add(caseCheck)
         rightChecks.add(wordMatchCheck)
         rightChecks.add(ignoreOrderCheck)
         add(rightChecks, BorderLayout.EAST)
     }
+
+    // 拖动标题栏移动弹窗。托盘点必须同时装在标题栏和标题文本上：AWT 只把鼠标事件发给最深的
+    // 可见组件，标题文本（CENTER 铺满）会挡住标题栏自身的事件。
+    // 不能自己监听 drag 调 setLocation：Wayland 不允许客户端定位顶层窗口，必须交给平台的
+    // WindowMoveListener（内部走 JBR 的窗口移动服务，X11/Wayland 各自实现）。
+    // 注意它的平台 setMovable(true) 只在弹窗有 CaptionPanel（setTitle）时才装监听，本弹窗自绘标题栏，
+    // 因此手动安装。
+    val moveListener = WindowMoveListener()
+    moveListener.installTo(titleBar)
+    moveListener.installTo(titleLabel)
+    titleBar.toolTipText = I18n.message(project, "search.endpoint.dragHint")
+    titleLabel.toolTipText = titleBar.toolTipText
+
     // 顶部固定高度的标题栏+搜索框垂直堆叠，结果区（scroll）放 CENTER 弹性收缩，
     // 避免搜索框被弹性布局拉得过高。
     val header = JPanel().apply {
@@ -439,8 +473,9 @@ fun showEndpointSearch(project: Project) {
         .createComponentPopupBuilder(content, searchField)
         .setRequestFocus(true)
         .setResizable(true)
-        .setMovable(true)
-        .setMinSize(Dimension(420, 240))
+        // 不使用平台的 setMovable：它只在弹窗有 CaptionPanel（setTitle）时才装拖拽监听，
+        // 本弹窗自绘标题栏并自行安装 WindowMoveListener（见上）。
+        .setMinSize(JBUI.size(POPUP_MIN_WIDTH_UNITS, POPUP_MIN_HEIGHT_UNITS))
         .createPopup()
     popup = created
     created.addListener(object : JBPopupListener {
@@ -457,10 +492,16 @@ fun showEndpointSearch(project: Project) {
         // 弹窗未显示时 size 始终为 null（pack 也不初始化）；用内容组件的 preferredSize 估算
         // （scroll/header 的 preferredSize 已显式设定，确定非 null）。
         // 注意：showInScreenCoordinates 的 point 是「弹窗左上角」坐标，不是中心。
+        //
+        // 原点取 locationOnScreen 而非 bounds：Wayland 下 JBR 不汇报 toplevel 的真实屏幕位置
+        // （恒返回 (0,0)），而 bounds 里却带着一个与位置无关的偏移（如 740,400）。若直接用
+        // bounds，居中点会被这个虚构偏移推向右下，再经平台的 fitIntoParentBounds 夹取后贴到右边缘。
+        // 用 locationOnScreen 在 X11 下等价于可见区原点（更准），在 Wayland 下自然退化为 (0,0)。
+        val origin = anchor.locationOnScreen
         val size = created.content.preferredSize
         val topLeft = Point(
-            bounds.x + (bounds.width - size.width) / 2,
-            bounds.y + (bounds.height - size.height) / 3
+            origin.x + (bounds.width - size.width) / 2,
+            origin.y + (bounds.height - size.height) / 3
         )
         created.showInScreenCoordinates(anchor, topLeft)
     } else {
