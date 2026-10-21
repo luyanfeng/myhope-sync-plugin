@@ -1363,27 +1363,31 @@ class MyHopeSyncPanel(private val project: Project) {
                     showSyncResult(syncResult)
                     updateStatusAfterSync(syncResult)
 
-                    // ── 同步后记录 hash（MVP：本地与服务端 hash 均记为本地 hash，保证本地未改 → SYNCED）──
-                    val syncMap = projectSettings.getSyncStatusMap().toMutableMap()
-                    for (group in filteredGroups) {
-                        for (endpoint in group.endpoints) {
-                            val key = computeEndpointKey(endpoint, group)
-                            val localHash = computeEndpointHash(endpoint)
-                            syncMap[key] = MyHopeDataConverter.buildSyncValue(localHash, 0)
+                    // ── 同步后记录 hash 并把行标为 SYNCED ──
+                    // 只在同步真正成功时执行：失败时写 hash / 标绿会让用户误以为已推送成功
+                    // （服务端实际没有这批变更），之后只能靠手动 Check Sync 才能纠正。
+                    if (syncResult.isSuccess) {
+                        val syncMap = projectSettings.getSyncStatusMap().toMutableMap()
+                        for (group in filteredGroups) {
+                            for (endpoint in group.endpoints) {
+                                val key = computeEndpointKey(endpoint, group)
+                                val localHash = computeEndpointHash(endpoint)
+                                syncMap[key] = MyHopeDataConverter.buildSyncValue(localHash, 0)
+                            }
                         }
-                    }
-                    projectSettings.setSyncStatusMap(syncMap)
+                        projectSettings.setSyncStatusMap(syncMap)
 
-                    val syncedKeys = mutableSetOf<String>()
-                    for (group in filteredGroups) {
-                        for (endpoint in group.endpoints) {
-                            syncedKeys.add(computeEndpointKey(endpoint, group))
+                        val syncedKeys = mutableSetOf<String>()
+                        for (group in filteredGroups) {
+                            for (endpoint in group.endpoints) {
+                                syncedKeys.add(computeEndpointKey(endpoint, group))
+                            }
                         }
-                    }
-                    for (i in rowEndpoints.indices) {
-                        val key = computeEndpointKey(rowEndpoints[i], rowGroups[i])
-                        if (key in syncedKeys) {
-                            rowSyncStatus[i] = SyncStatus.SYNCED
+                        for (i in rowEndpoints.indices) {
+                            val key = computeEndpointKey(rowEndpoints[i], rowGroups[i])
+                            if (key in syncedKeys) {
+                                rowSyncStatus[i] = SyncStatus.SYNCED
+                            }
                         }
                     }
 

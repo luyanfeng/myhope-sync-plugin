@@ -277,11 +277,15 @@ class SyncService(
             return SyncResult(total = totalEndpoints, success = 0, failed = 0, errors = errors)
         }
         val createdCollections = ops.count { it["op_type"] == "create_collection" }
+        log.info("待推送 ops=${ops.size}（其中 create_collection=$createdCollections）")
 
         // c. 分批 push（≤500/批），每批独立 OCC：409 → server_max_seq 更新水位重推，最多 3 次
         val batches = ops.chunked(500)
+        // 请求类 op 总数：用于失败时准确统计“未能推送的端点变更数”
+        val totalRequestOps = ops.count { isRequestOp(it) }
         var currentSeq = baseSeq
         var pushedOps = 0
+        var pushedCollections = 0
         var pushedRequestOps = 0
         var pushedRequestCreateOps = 0
         var pushedRequestUpdateOps = 0
@@ -312,6 +316,7 @@ class SyncService(
                     unit?.accepted == true -> {
                         currentSeq = unit.serverMaxSeq ?: (currentSeq + batch.size)
                         pushedOps += batch.size
+                        pushedCollections += batch.count { it["op_type"] == "create_collection" }
                         val reqOps = batch.filter { isRequestOp(it) }
                         pushedRequestOps += reqOps.size
                         pushedRequestCreateOps += reqOps.count { (it["op_type"] as? String) == "create_request" }
@@ -320,10 +325,31 @@ class SyncService(
                         break
                     }
                     unit?.accepted == false -> {
-                        val newBase = unit.serverMaxSeq ?: currentSeq
-                        log.warn("OCC 冲突，server_max_seq=$newBase，重试第 $attempt 次")
-                        currentSeq = newBase
-                        // 循环继续重推本批（re-seq 基于 newBase）
+                        // 服务端 branch oplog 的拒收原因只有 occ_conflict；出现其它 reason 说明是
+                        // 不可重试的拒绝，原地重推只会浪费重试次数，直接中止。
+                        val reason = unit.reason
+                        if (reason != null && reason != "occ_conflict") {
+                            errors.add("推送被服务端拒绝（reason=$reason），已中止。请到 MyHope 端检查该分支状态")
+                            batchHardFailed = true
+                            break
+                        }
+                        // server_max_seq 缺失或未推进（等于当前 base_seq）时，用同一 base_seq 重推必然再次冲突，
+                        // 改为回查服务端实时水位，避免三次重试全部空转。
+                        val reported = unit.serverMaxSeq
+                        val nextBase = if (reported == null || reported == currentSeq) {
+                            val head = client.getOplogHead(accessInstanceId, userAppId, branchId, workspaceId)
+                            if (head.isFailure) {
+                                errors.add("OCC 冲突后重新查询服务端水位失败: ${head.exceptionOrNull()?.message}")
+                                batchHardFailed = true
+                                break
+                            }
+                            head.getOrNull()?.currentSeq ?: currentSeq
+                        } else {
+                            reported
+                        }
+                        log.warn("OCC 冲突，server_max_seq=$reported，改以 base_seq=$nextBase 重试第 $attempt 次")
+                        currentSeq = nextBase
+                        // 循环继续重推本批（re-seq 基于 nextBase）
                     }
                     else -> {
                         errors.add("推送响应解析失败")
@@ -334,7 +360,11 @@ class SyncService(
             }
             if (!batchOk) {
                 if (!batchHardFailed) {
-                    errors.add("同步冲突（OCC），重试 3 次后仍失败，请稍后重试或到 Web 端处理")
+                    errors.add(
+                        "同步冲突（OCC）：重试 3 次后仍无法写入分支 $branchName。"
+                            + "通常是另一个 IDEA 实例/他人正在高频写同一分支，"
+                            + "请关闭其它实例后重新点击「同步选中」；已成功的批次不会重复推送。"
+                    )
                 }
                 success = false
                 break
@@ -365,8 +395,12 @@ class SyncService(
         return SyncResult(
             total = totalEndpoints,
             success = pushedRequestOps,
-            failed = if (errors.isEmpty()) 0 else (totalEndpoints - pushedRequestOps).coerceAtLeast(0),
-            collectionsCreated = if (success) createdCollections else 0,
+            // 失败端点 = 本次生成了请求 op 但未能成功推送的部分。不能用
+            // totalEndpoints - pushedRequestOps：未变化的端点根本不产生 op，会被误计为失败。
+            // 下限取 1：失败可能只发生在 collection op 上（此时没有 request op 差额），
+            // 而 SyncResult.isSuccess 以 failed == 0 判定，必须保证失败时它不为 0。
+            failed = if (success) 0 else maxOf(1, totalRequestOps - pushedRequestOps),
+            collectionsCreated = pushedCollections,
             requestsCreated = pushedRequestCreateOps,
             requestsUpdated = pushedRequestUpdateOps,
             errors = errors,

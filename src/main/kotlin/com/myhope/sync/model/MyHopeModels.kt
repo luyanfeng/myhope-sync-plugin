@@ -96,7 +96,13 @@ data class SyncResult(
     val prCreated: Boolean = false,
     val prMessage: String? = null
 ) {
-    val isSuccess: Boolean get() = failed == 0
+    /**
+     * 同步是否真正成功。
+     *
+     * 必须同时看 [errors]：早退路径（未配置 Token / 取水位失败 / 取快照失败）用
+     * `failed = totalEndpoints` 计数，当选中端点为 0 时该值为 0，只看 failed 会误判成功。
+     */
+    val isSuccess: Boolean get() = failed == 0 && errors.isEmpty()
 }
 
 // ====================================================================

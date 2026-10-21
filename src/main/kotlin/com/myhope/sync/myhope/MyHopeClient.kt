@@ -555,17 +555,6 @@ class MyHopeClient(
                 MyHopeException("HTTP $status @ $path: ${body.take(500)}")
         }
     }
-
-    /** 从错误响应体提取 server_max_seq（OCC 冲突时作为新 base_seq）。 */
-    private fun extractServerMaxSeq(body: String): Int? {
-        return try {
-            val obj = JsonParser.parseString(body).asJsonObject
-            obj.get("server_max_seq")?.asInt
-                ?: obj.getAsJsonObject("data")?.get("server_max_seq")?.asInt
-        } catch (_: Exception) {
-            null
-        }
-    }
 }
 
 /**
