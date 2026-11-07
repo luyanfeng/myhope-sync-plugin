@@ -373,18 +373,19 @@ class SpringControllerParser(private val project: Project) {
      */
     fun parseControllerClass(psiClass: PsiClass, moduleName: String = ""): ControllerGroup? {
         return try {
-            val classLevelPath = extractClassLevelPath(psiClass)
+            val classLevelPaths = extractClassLevelPaths(psiClass)
             val apiTag = extractApiTag(psiClass)
 
             val endpoints = psiClass.methods
-                .flatMap { method -> parseMethodEndpoints(method, classLevelPath) }
+                .flatMap { method -> parseMethodEndpoints(method, classLevelPaths) }
 
             if (endpoints.isEmpty()) return null
 
             ControllerGroup(
                 controllerClassName = psiClass.name ?: "Unknown",
                 controllerQualifiedName = psiClass.qualifiedName ?: "Unknown",
-                classLevelPath = classLevelPath.ifEmpty { null },
+                // 集合标题只取首个类级路径（多前缀端点仍在各自的 fullPath 中体现）
+                classLevelPath = classLevelPaths.firstOrNull()?.ifEmpty { null },
                 moduleName = moduleName,
                 endpoints = endpoints,
                 apiTag = apiTag
@@ -398,14 +399,17 @@ class SpringControllerParser(private val project: Project) {
     // ======================== 提取类级别路径 ========================
 
     /**
-     * 从类上提取 [@RequestMapping] 的 value/path 作为路径前缀。
+     * 从类上提取 [@RequestMapping] 的 value/path 路径前缀列表。
+     *
+     * 支持单值与数组写法（如 `@RequestMapping({"/sms", "/open/sms"})`），
+     * 每个前缀都会与下面的方法路径做组合。
      */
-    private fun extractClassLevelPath(psiClass: PsiClass): String {
+    private fun extractClassLevelPaths(psiClass: PsiClass): List<String> {
         val annotation = psiClass.annotations
             .firstOrNull { it.qualifiedName == ANNOTATION_REQUEST_MAPPING }
-            ?: return ""
+            ?: return emptyList()
 
-        return getPathFromAnnotation(annotation) ?: ""
+        return getPathsFromAnnotation(annotation)
     }
 
     /**
@@ -456,40 +460,46 @@ class SpringControllerParser(private val project: Project) {
     /**
      * 解析 [PsiMethod] 上的所有 HTTP 映射注解，生成对应的端点列表。
      *
-     * 一个方法上可能有多个注解（极少见），也可能有 @RequestMapping 同时指定多个 method。
+     * 一个方法上可能有多个注解（极少见），也可能有 @RequestMapping 同时指定多个 method 和多个 path。
+     * 按 Spring 语义对 (类级路径 × 方法路径 × HTTP 方法) 做笛卡尔积，每种组合一个端点。
      */
-    private fun parseMethodEndpoints(method: PsiMethod, classLevelPath: String): List<SpringEndpoint> {
+    private fun parseMethodEndpoints(method: PsiMethod, classLevelPaths: List<String>): List<SpringEndpoint> {
         val endpoints = mutableListOf<SpringEndpoint>()
         val description = extractApiDescription(method)
+        val classPaths = classLevelPaths.ifEmpty { listOf("") }
 
         for (annotation in method.annotations) {
             val qualifiedName = annotation.qualifiedName ?: continue
 
             // 解析当前注解对应的 HTTP 方法和路径
-            val methodInfo = resolveHttpMapping(annotation, qualifiedName) ?: continue
-            val (httpMethods, methodPath) = methodInfo
+            val (httpMethods, methodPaths) = resolveHttpMapping(annotation, qualifiedName) ?: continue
+            val methodPathList = methodPaths.ifEmpty { listOf("") }
 
-            val fullPath = buildFullPath(classLevelPath, methodPath)
             val parameters = parseMethodParameters(method)
             val consumes = extractStringArrayAttribute(annotation, "consumes")
 
             val controllerName = method.containingClass?.name ?: "Unknown"
             val controllerQualifiedName = method.containingClass?.qualifiedName ?: "Unknown"
 
-            for (httpMethod in httpMethods) {
-                endpoints.add(
-                    SpringEndpoint(
-                        controllerClassName = controllerName,
-                        controllerClassQualifiedName = controllerQualifiedName,
-                        methodName = method.name,
-                        httpMethod = httpMethod,
-                        path = methodPath,
-                        fullPath = fullPath,
-                        description = description,
-                        parameters = parameters,
-                        consumes = consumes
-                    )
-                )
+            for (classPath in classPaths) {
+                for (methodPath in methodPathList) {
+                    val fullPath = buildFullPath(classPath, methodPath)
+                    for (httpMethod in httpMethods) {
+                        endpoints.add(
+                            SpringEndpoint(
+                                controllerClassName = controllerName,
+                                controllerClassQualifiedName = controllerQualifiedName,
+                                methodName = method.name,
+                                httpMethod = httpMethod,
+                                path = methodPath,
+                                fullPath = fullPath,
+                                description = description,
+                                parameters = parameters,
+                                consumes = consumes
+                            )
+                        )
+                    }
+                }
             }
         }
 
@@ -523,26 +533,26 @@ class SpringControllerParser(private val project: Project) {
     }
 
     /**
-     * 将 HTTP 映射注解解析为 (HTTP 方法列表, 路径) 二元组。
+     * 将 HTTP 映射注解解析为 (HTTP 方法列表, 路径列表) 二元组。
      *
      * @return 无法识别时返回 null
      */
     private fun resolveHttpMapping(
         annotation: PsiAnnotation,
         qualifiedName: String
-    ): Pair<List<HttpMethod>, String>? {
-        val path = getPathFromAnnotation(annotation) ?: ""
+    ): Pair<List<HttpMethod>, List<String>>? {
+        val paths = getPathsFromAnnotation(annotation)
 
         return when (qualifiedName) {
             ANNOTATION_REQUEST_MAPPING -> {
                 val methods = getHttpMethodsFromRequestMapping(annotation)
-                methods to path
+                methods to paths
             }
-            ANNOTATION_GET_MAPPING -> listOf(HttpMethod.GET) to path
-            ANNOTATION_POST_MAPPING -> listOf(HttpMethod.POST) to path
-            ANNOTATION_PUT_MAPPING -> listOf(HttpMethod.PUT) to path
-            ANNOTATION_DELETE_MAPPING -> listOf(HttpMethod.DELETE) to path
-            ANNOTATION_PATCH_MAPPING -> listOf(HttpMethod.PATCH) to path
+            ANNOTATION_GET_MAPPING -> listOf(HttpMethod.GET) to paths
+            ANNOTATION_POST_MAPPING -> listOf(HttpMethod.POST) to paths
+            ANNOTATION_PUT_MAPPING -> listOf(HttpMethod.PUT) to paths
+            ANNOTATION_DELETE_MAPPING -> listOf(HttpMethod.DELETE) to paths
+            ANNOTATION_PATCH_MAPPING -> listOf(HttpMethod.PATCH) to paths
             else -> null
         }
     }
@@ -964,18 +974,20 @@ class SpringControllerParser(private val project: Project) {
     }
 
     /**
-     * 从注解中提取路径（value 或 path 属性）。
+     * 从注解中提取路径列表（value 或 path 属性）。
      *
-     * @RequestMapping 同时接受 value 和 path，且可互换。
-     * 优先尝试 value，再尝试 path。
+     * [RequestMapping] 同时接受 value 和 path，且可互换；两者均可为单值或数组：
+     * - `@GetMapping("/x")`                       → ["/x"]
+     * - `@GetMapping({"/x", "/y"})`               → ["/x", "/y"]
+     *
+     * @return 路径列表；属性未指定或无法解析时为空列表
      */
-    private fun getPathFromAnnotation(annotation: PsiAnnotation): String? {
+    private fun getPathsFromAnnotation(annotation: PsiAnnotation): List<String> {
         for (attr in listOf("value", "path")) {
-            val attrValue = annotation.findAttributeValue(attr) ?: continue
-            val path = extractStringValue(attrValue)
-            if (path != null) return path
+            val paths = extractStringArrayAttribute(annotation, attr)
+            if (paths.isNotEmpty()) return paths
         }
-        return null
+        return emptyList()
     }
 
     /**

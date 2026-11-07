@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.myhope.sync"
-            version = "1.0.0"
+            version = "1.1.0"
 
 // 签名密钥目录（仓库外）。可用 CERT_DIR 环境变量覆盖。
 val certDir: java.io.File = file(
@@ -36,7 +36,7 @@ intellijPlatform {
     pluginConfiguration {
         id = "com.myhope.sync"
             name = "MyHope Sync"
-            version = "1.0.0"
+            version = "1.1.0"
         description = """
             <p><b>An IDEA plugin for MyHope — sync Java Spring Boot endpoints from your IDE to MyHope Server.</b></p>
             <p><b>一个面向 MyHope 的 IDEA 插件</b>，用于从 IDEA 开发工具上向 MyHope Server 服务同步 Java Spring Boot 接口数据。</p>
@@ -92,6 +92,9 @@ intellijPlatform {
         """.trimIndent()
             changeNotes = """
             <ul>
+                <li><b>1.1.0</b> 修复 <code>@RequestMapping</code> / <code>@GetMapping</code> 等注解的数组路径写法
+                    （如 <code>@RequestMapping({"/sms", "/open/sms"})</code>）：类级与方法级多路径均按
+                    Spring 语义展开为多个端点，此前数组写法会丢失端点或丢失类级前缀。</li>
                 <li><b>1.0.0</b> 首个正式版：Spring Boot 接口扫描与参数解析、增量同步到 MyHope 分支快照、
                     实例绑定、同步状态跟踪、自动发布 PR、接口搜索弹窗与编辑器右键动作、多模块选择同步、
                     表格过滤/列设置/CSV 导出、中英文界面、Wayland 与高分屏适配。
