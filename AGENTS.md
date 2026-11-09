@@ -25,7 +25,7 @@ gradle verifyPlugin                                   # 二进制兼容性（IDE
 - **接口搜索链路**独立于同步：`action/SearchEndpointAction`（Ctrl+\）→ `toolwindow/EndpointSearchPopup` → `index/EndpointSearchIndex`（按 Module 缓存 ControllerGroup）→ `SpringControllerParser`。`index/EndpointSearchStartupActivity` 是 `ProjectManagerListener`（注册在 plugin.xml 的 `<projectListeners>`），项目打开后异步预热索引。
 - 右键 `Copy Full URL / Path / cURL / to JSON` 由 `action/` 下的 `EndpointUrlAction` 实现，走 `SpringControllerParser` 的同一套解析（不重复实现路径拼接）。
 - 同步模型：分支 + 工作空间 + 快照 items。每个 Controller 分组 → collection item，每个端点 → request item。
-- 同步状态：本地 hash vs 持久化 hash，key = `Controller:HTTP_METHOD:path`；路径/方法变更 → key 变 → UNSYNCED，仅参数变更 → MODIFIED。
+- 同步状态：唯一权威口径 = **服务端快照现状 vs 本地代码实时对比**（`performServerStatusCheck`，「刷新」与「检查同步状态」共用同一条路径）：服务端未命中 → UNSYNCED；命中且 `isRequestContentEqual`（与增量推送 update diff 同口径）为空 → SYNCED，非空 → MODIFIED。**没有任何本地持久化同步状态**（`syncStatusData`/本地 hash 机制已整体删除）——不要复活本地 hash 式状态推断，服务端分支重建、换分支/换目标后它会产生假绿，且与检查结果互相打架。
 - 分支按名匹配/创建（`generateEntityId("br", branchName)`）；工作空间按 `workspaceId` 匹配，无则取第一个（isDefault 优先）。
 
 ## 同步协议约束（改动核心，别猜）

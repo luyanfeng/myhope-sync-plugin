@@ -29,7 +29,6 @@ import com.intellij.openapi.project.Project
 class ProjectAppSettings(private val project: Project) : PersistentStateComponent<ProjectAppSettings.State> {
 
     data class State(
-        var syncStatusData: String = "",        // JSON: endpointKey → "localHash,srvHash"
         var selectedProjectsData: String = "",  // JSON 数组：用户选中的项目名列表
         var cachedScanJson: String = "",        // JSON: 上次刷新扫描的 groups 序列化数据
         var workspaceId: String = "",           // 目标工作空间
@@ -63,10 +62,6 @@ class ProjectAppSettings(private val project: Project) : PersistentStateComponen
     override fun loadState(state: State) {
         myState = state
     }
-
-    var syncStatusData: String
-        get() = myState.syncStatusData
-        set(value) { myState.syncStatusData = value }
 
     var selectedProjectsData: String
         get() = myState.selectedProjectsData
@@ -159,31 +154,6 @@ class ProjectAppSettings(private val project: Project) : PersistentStateComponen
 
         private val syncGson = GsonBuilder().create()
 
-        /**
-         * 解析持久化的同步状态映射：endpointKey → "localHash,srvHash"。
-         * 兼容旧格式（Int values），自动转换为新格式。
-         */
-        fun deserializeSyncMap(data: String): Map<String, String> {
-            if (data.isBlank()) return emptyMap()
-            // 尝试新格式（String 值，如 "12345,67890"）
-            val newType = object : TypeToken<Map<String, String>>() {}.type
-            val newResult = try {
-                syncGson.fromJson<Map<String, String>>(data, newType)
-            } catch (_: Exception) { null }
-            if (newResult != null) return newResult
-            // 兼容旧格式（Int 值，如 12345），转换为 "value,0"
-            return try {
-                val oldType = object : TypeToken<Map<String, Int>>() {}.type
-                val old = syncGson.fromJson<Map<String, Int>>(data, oldType) ?: return emptyMap()
-                old.mapValues { "${it.value},0" }
-            } catch (_: Exception) { emptyMap() }
-        }
-
-        /**
-         * 序列化同步状态映射为 JSON 字符串。
-         */
-        fun serializeSyncMap(map: Map<String, String>): String = syncGson.toJson(map)
-
         /** 逗号分隔的 project 名 → Set */
         fun deserializeProjects(data: String): Set<String> {
             if (data.isBlank()) return emptySet()
@@ -194,12 +164,6 @@ class ProjectAppSettings(private val project: Project) : PersistentStateComponen
         fun serializeProjects(projects: Set<String>): String =
             projects.joinToString(",")
     }
-
-    /** 获取同步状态映射（快捷方式） */
-    fun getSyncStatusMap(): Map<String, String> = deserializeSyncMap(syncStatusData)
-
-    /** 设置同步状态映射（快捷方式） */
-    fun setSyncStatusMap(map: Map<String, String>) { syncStatusData = serializeSyncMap(map) }
 
     /** 获取持久化的选中项目集合 */
     fun getSelectedProjects(): Set<String> = deserializeProjects(selectedProjectsData)

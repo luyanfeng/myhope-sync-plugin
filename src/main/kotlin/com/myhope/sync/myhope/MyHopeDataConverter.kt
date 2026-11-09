@@ -33,28 +33,6 @@ class MyHopeDataConverter {
             .create()
 
         /**
-         * 从持久化字符串中解析本地 hash。
-         * 格式： "localHash,srvHash" → localHash；"localHash" → localHash
-         */
-        fun parseLocalHash(value: String): Int {
-            return value.substringBefore(",").toIntOrNull() ?: 0
-        }
-
-        /**
-         * 从持久化字符串中解析服务端请求 hash。
-         * 格式： "localHash,srvHash" → srvHash
-         */
-        fun parseSrvReqHash(value: String): Int {
-            return value.substringAfter(",", "0").toIntOrNull() ?: 0
-        }
-
-        /**
-         * 构建持久化值字符串。
-         * 格式： "localHash,srvHash"
-         */
-        fun buildSyncValue(localHash: Int, srvHash: Int): String = "$localHash,$srvHash"
-
-        /**
          * 根据参数类型名返回 HTTP 请求中合理的占位值（字符串形式）。
          * 用于路径变量、query param 等场景。
          */
@@ -325,30 +303,52 @@ class MyHopeDataConverter {
             )
 
             for (endpoint in group.endpoints) {
-                // 复用现有请求转换逻辑，避免重复实现参数/body 转换
-                val request = toMyHopeRequest(endpoint)
+                // 复用同一构建口径（与状态比对的 buildLocalRequestItem 完全一致），仅补 id/parentId
                 items.add(
-                    SnapshotItem(
+                    buildLocalRequestItem(endpoint).copy(
                         id = generateEntityId("hr", "${endpoint.httpMethod.name}:${endpoint.fullPath}$idSuffix"),
-                        parentId = collectionId,
-                        type = ItemType.REQUEST,
-                        title = endpoint.description?.takeIf { it.isNotBlank() } ?: endpoint.fullPath,
-                        method = endpoint.httpMethod.name,
-                        endpoint = endpoint.fullPath,
-                        params = request.params,
-                        headers = request.headers,
-                        auth = request.auth,
-                        body = request.body,
-                        preRequestScript = null,
-                        testScript = null,
-                        description = endpoint.description,
-                        requestVariables = emptyList()
+                        parentId = collectionId
                     )
                 )
             }
         }
         return items
     }
+
+    /**
+     * 构建本地端点对应的请求快照项（字段口径与 [toSnapshotItems] 的 request 完全一致）。
+     *
+     * id/parentId 不参与内容对比，仅为满足模型必填而置空。
+     * 供两处复用：同步推送的 items 生成、同步状态的内容比对（服务端 item vs 本地 item）。
+     */
+    fun buildLocalRequestItem(endpoint: SpringEndpoint): SnapshotItem {
+        val request = toMyHopeRequest(endpoint)
+        return SnapshotItem(
+            id = "",
+            parentId = null,
+            type = ItemType.REQUEST,
+            title = endpoint.description?.takeIf { it.isNotBlank() } ?: endpoint.fullPath,
+            method = endpoint.httpMethod.name,
+            endpoint = endpoint.fullPath,
+            params = request.params,
+            headers = request.headers,
+            auth = request.auth,
+            body = request.body,
+            preRequestScript = null,
+            testScript = null,
+            description = endpoint.description,
+            requestVariables = emptyList()
+        )
+    }
+
+    /**
+     * 判断服务端 request item 内容与本地端点是否一致。
+     *
+     * 复用 [buildRequestUpdateOps]（与增量推送的 update diff 完全同口径）：
+     * 需要产生任何 update op 即视为不一致。保证「状态为 SYNCED ⇔ 同步对该端点是 no-op」。
+     */
+    fun isRequestContentEqual(local: SnapshotItem, server: SnapshotItem): Boolean =
+        buildRequestUpdateOps(local, server).isEmpty()
 
     /**
      * 本地 items 与服务端现有 items 对比，生成最小化 oplog op 列表。

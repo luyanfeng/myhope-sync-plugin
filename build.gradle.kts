@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.myhope.sync"
-            version = "1.1.0"
+            version = "1.2.0"
 
 // 签名密钥目录（仓库外）。可用 CERT_DIR 环境变量覆盖。
 val certDir: java.io.File = file(
@@ -36,7 +36,7 @@ intellijPlatform {
     pluginConfiguration {
         id = "com.myhope.sync"
             name = "MyHope Sync"
-            version = "1.1.0"
+            version = "1.2.0"
         description = """
             <p><b>An IDEA plugin for MyHope — sync Java Spring Boot endpoints from your IDE to MyHope Server.</b></p>
             <p><b>一个面向 MyHope 的 IDEA 插件</b>，用于从 IDEA 开发工具上向 MyHope Server 服务同步 Java Spring Boot 接口数据。</p>
@@ -92,6 +92,10 @@ intellijPlatform {
         """.trimIndent()
             changeNotes = """
             <ul>
+                <li><b>1.2.0</b> 同步状态机制重构：状态改为「服务端快照现状 vs 本地代码」实时对比，
+                    「刷新」与「检查同步状态」共用同一条计算口径，结果永远一致；
+                    移除本地持久化同步状态，修复刷新显示已同步、检查又显示未同步的来回切换问题；
+                    修复数组路径 / 多模块场景下端点状态 key 冲突；MODIFIED 语义调整为「服务端需要重推」。</li>
                 <li><b>1.1.0</b> 修复 <code>@RequestMapping</code> / <code>@GetMapping</code> 等注解的数组路径写法
                     （如 <code>@RequestMapping({"/sms", "/open/sms"})</code>）：类级与方法级多路径均按
                     Spring 语义展开为多个端点，此前数组写法会丢失端点或丢失类级前缀。</li>

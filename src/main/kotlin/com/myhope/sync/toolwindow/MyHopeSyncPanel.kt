@@ -25,7 +25,6 @@ import com.myhope.sync.model.ParamSource
 import com.myhope.sync.model.SpringEndpoint
 import com.myhope.sync.model.SyncResult
 import com.myhope.sync.model.SyncStatus
-import com.myhope.sync.model.computeEndpointHash
 import com.myhope.sync.model.computeEndpointKey
 import com.myhope.sync.psi.SpringControllerParser
 import com.myhope.sync.service.SyncService
@@ -1213,17 +1212,35 @@ class MyHopeSyncPanel(private val project: Project) {
                     return
                 }
 
-                // 2. 统一更新 UI（自动刷新场景：同步状态由 refreshTable 按持久化本地 hash 判断，保持纯本地，不查服务端）
+                // 2. 服务端状态核对：与「检查同步状态」共用同一条权威计算路径（服务端现状 vs 本地代码）
+                val statuses = try {
+                    performServerStatusCheck(groups ?: emptyList(), indicator)
+                } catch (e: Exception) {
+                    log.warn("刷新时核对服务端同步状态失败: ${e.message}", e)
+                    SwingUtilities.invokeLater {
+                        statusLabel.text = I18n.message(project, "status.checkFailed")
+                        Messages.showErrorDialog(
+                            project,
+                            I18n.message(project, "refresh.statusCheckFailed.message", e.message ?: ""),
+                            I18n.message(project, "refresh.statusCheckFailed.title")
+                        )
+                    }
+                    null
+                }
+
+                // 3. 统一更新 UI
                 SwingUtilities.invokeLater {
                     scannedGroups = groups ?: emptyList()
                     // 刷新后重新应用过滤（保留用户输入的过滤串）
                     t = System.currentTimeMillis()
-                    refreshTable()
+                    refreshTable(statuses)
                     val tableCost = System.currentTimeMillis() - t
                     LogUtil.info(log, project) { "[耗时] 刷新表格: ${tableCost}ms" }
                     updateStatsLabel()
                     cacheCurrentScanData() // 缓存扫描结果
-                    updateStatusAfterScan()
+                    if (statuses != null) {
+                        updateStatusAfterScan()
+                    }
                 }
             }
         })
@@ -1363,20 +1380,10 @@ class MyHopeSyncPanel(private val project: Project) {
                     showSyncResult(syncResult)
                     updateStatusAfterSync(syncResult)
 
-                    // ── 同步后记录 hash 并把行标为 SYNCED ──
-                    // 只在同步真正成功时执行：失败时写 hash / 标绿会让用户误以为已推送成功
-                    // （服务端实际没有这批变更），之后只能靠手动 Check Sync 才能纠正。
+                    // ── 同步成功后把行标为 SYNCED ──
+                    // 只在同步真正成功时执行；失败时绝不标绿（服务端实际没有这批变更）。
+                    // 不再写任何本地持久化状态：下次刷新/检查会从服务端快照重新推导。
                     if (syncResult.isSuccess) {
-                        val syncMap = projectSettings.getSyncStatusMap().toMutableMap()
-                        for (group in filteredGroups) {
-                            for (endpoint in group.endpoints) {
-                                val key = computeEndpointKey(endpoint, group)
-                                val localHash = computeEndpointHash(endpoint)
-                                syncMap[key] = MyHopeDataConverter.buildSyncValue(localHash, 0)
-                            }
-                        }
-                        projectSettings.setSyncStatusMap(syncMap)
-
                         val syncedKeys = mutableSetOf<String>()
                         for (group in filteredGroups) {
                             for (endpoint in group.endpoints) {
@@ -1507,11 +1514,17 @@ class MyHopeSyncPanel(private val project: Project) {
     // ====================================================================
 
     /**
-     * 在后台线程中执行同步状态检查（服务端查询版，仅手动「检查同步状态」调用）。
+     * 在后台线程中计算同步状态（「刷新」与「检查同步状态」共用的唯一权威口径）。
      *
      * 拉取服务端快照（getSnapshot），按 `method + endpoint(fullPath)` 在目标目录树
      * （[ProjectAppSettings.targetCollectionId]，空=根级）内匹配服务端 Request item：
-     * 命中 → SYNCED；未命中 → UNSYNCED。**只判存在性，不比内容**。
+     * - 未命中 → UNSYNCED（服务端没有该端点）；
+     * - 命中且内容与本地一致（[MyHopeDataConverter.isRequestContentEqual]，与增量推送的
+     *   update diff 同口径）→ SYNCED（同步对该端点是 no-op）；
+     * - 命中但内容不一致 → MODIFIED（服务端是旧版本，需要重推）。
+     *
+     * 状态完全由「服务端现状 vs 本地代码」实时推导，不依赖任何本地持久化状态，
+     * 因此刷新与检查两种入口不可能给出不同结论。
      *
      * 失败直接抛异常（由调用方捕获并弹窗报错），不静默、不兜底、不重试：
      * - getSnapshot 失败 → Result.getOrThrow() 抛出；
@@ -1589,15 +1602,21 @@ class MyHopeSyncPanel(private val project: Project) {
                         else -> group.controllerClassName
                     }
                 )
-                // 服务端同 parent 集合内存在同 method+endpoint（内容不另比）→ SYNCED；否则 UNSYNCED
+                // 服务端同 parent 集合内匹配 method+endpoint；命中后比内容（与增量推送同口径）
                 val matchKey = "${endpoint.httpMethod.name}:${endpoint.fullPath}"
-                statuses[i] = if (serverRequestIndex[collectionTitle]?.containsKey(matchKey) == true) {
-                    SyncStatus.SYNCED
-                } else {
-                    SyncStatus.UNSYNCED
+                val serverItem = serverRequestIndex[collectionTitle]?.get(matchKey)
+                statuses[i] = when {
+                    serverItem == null -> SyncStatus.UNSYNCED
+                    converter.isRequestContentEqual(converter.buildLocalRequestItem(endpoint), serverItem) ->
+                        SyncStatus.SYNCED
+                    else -> SyncStatus.MODIFIED
                 }
             }
-            LogUtil.info(log, project) { "=== 检查同步状态完成（服务端查询版）: ${statuses.count { it == SyncStatus.SYNCED }}/$total 命中 ===" }
+            LogUtil.info(log, project) {
+                "=== 同步状态计算完成: SYNCED=${statuses.count { it == SyncStatus.SYNCED }} " +
+                    "MODIFIED=${statuses.count { it == SyncStatus.MODIFIED }} " +
+                    "UNSYNCED=${statuses.count { it == SyncStatus.UNSYNCED }} / $total ==="
+            }
             return statuses
         } finally {
             client.close()
@@ -1670,7 +1689,13 @@ class MyHopeSyncPanel(private val project: Project) {
     //  Table display
     // ====================================================================
 
-    private fun refreshTable() {
+    /**
+     * 用 [scannedGroups] 重建表格。
+     *
+     * @param statuses 与 flat(scannedGroups) 顺序一致的同步状态列表（服务端核对结果）；
+     *   为 null 时（服务端核对失败/本地缓存恢复）全部按 UNSYNCED 显示——没有服务端证据就不标绿
+     */
+    private fun refreshTable(statuses: List<SyncStatus>? = null) {
         // 临时分离 frozen 表的 rowSorter，避免添加行时与主表重复通知导致崩溃
         frozenTable.rowSorter = null
 
@@ -1680,26 +1705,13 @@ class MyHopeSyncPanel(private val project: Project) {
         rowGroups.clear()
         rowSyncStatus.clear()
 
-        val persistedMap = ProjectAppSettings.getInstance(project).getSyncStatusMap()
-
         var index = 0
         for (group in scannedGroups) {
             for (endpoint in group.endpoints) {
                 index++
                 rowEndpoints.add(endpoint)
                 rowGroups.add(group)
-
-                // 从持久化数据做启发式推断同步状态
-                val key = computeEndpointKey(endpoint, group)
-                val currentHash = computeEndpointHash(endpoint)
-                val storedValue = persistedMap[key]
-                val storedLocalHash = if (storedValue != null) MyHopeDataConverter.parseLocalHash(storedValue) else null
-                val status = when {
-                    storedValue == null -> SyncStatus.UNSYNCED
-                    storedLocalHash == currentHash -> SyncStatus.SYNCED
-                    else -> SyncStatus.MODIFIED
-                }
-                rowSyncStatus.add(status)
+                rowSyncStatus.add(statuses?.getOrNull(index - 1) ?: SyncStatus.UNSYNCED)
 
                 // ── 多行单元格：标题并入路径列，接口类列追加 @Api value ──
                 val desc = endpoint.description?.takeIf { it.isNotBlank() }

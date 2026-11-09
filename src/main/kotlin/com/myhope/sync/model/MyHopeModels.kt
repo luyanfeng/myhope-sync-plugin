@@ -136,30 +136,15 @@ enum class LogLevel(val label: String, val labelZh: String) {
  * 计算端点在持久化存储中的唯一键。
  * 用于匹配本地端点 ↔ 存储的 hash ↔ 服务端请求标题。
  */
+/**
+ * 端点的内存映射键（仅用于行与状态的对应关系，不持久化）。
+ * 必须含 moduleName 与 fullPath：数组路径会产生多条同 path 不同 fullPath 的端点，
+ * 同一 Controller 类也可能出现在多个模块，缺任一维度都会撞 key 导致状态串行。
+ */
 fun computeEndpointKey(
     endpoint: SpringEndpoint,
     group: ControllerGroup
-): String = "${group.controllerQualifiedName}:${endpoint.httpMethod.name}:${endpoint.path}"
-
-/**
- * 计算端点的内容 hash，用于检测本地代码是否修改。
- * 仅 hash 影响实际同步结果的字段（方法、路径、参数）。
- */
-fun computeEndpointHash(endpoint: SpringEndpoint): Int {
-    var hash = endpoint.httpMethod.ordinal
-    hash = 31 * hash + endpoint.path.hashCode()
-    hash = 31 * hash + endpoint.fullPath.hashCode()
-    val sortedParams = endpoint.parameters.sortedWith(
-        compareBy({ it.source.ordinal }, { it.name })
-    )
-    for (param in sortedParams) {
-        hash = 31 * hash + param.name.hashCode()
-        hash = 31 * hash + param.type.hashCode()
-        hash = 31 * hash + param.source.ordinal
-        hash = 31 * hash + (if (param.required) 1 else 0)
-    }
-    return hash
-}
+): String = "${group.controllerQualifiedName}@${group.moduleName}:${endpoint.httpMethod.name}:${endpoint.fullPath}"
 
 // ====================================================================
 //  myhope 服务端数据契约（面向 myhope-pr-server）
